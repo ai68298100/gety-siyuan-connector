@@ -287,7 +287,7 @@ export function estimateReadTime(wordCount: number): number {
 
 /**
  * Build a display title that includes the notebook name for context.
- * Example: "2020年日记 · DailyNote"
+ * Example: "示例文档 · 笔记"
  */
 export function buildDisplayTitle(
 	docTitle: string,
@@ -298,7 +298,7 @@ export function buildDisplayTitle(
 }
 
 /**
- * Convert a SiYuan hPath (e.g. "/2020年日记" or "/安徽金宣/金宣-投资项目/公司名")
+ * Convert a SiYuan hPath (e.g. "/示例文档" or "/项目A/子目录/文档名")
  * into a readable breadcrumb string. Returns the path without leading slash.
  */
 export function formatPathBreadcrumb(hpath: string | undefined): string {
@@ -349,7 +349,7 @@ export function stripDuplicateH1(markdown: string, title: string): string {
  * tags. Renders as a visually distinct info bar at the top of search preview.
  *
  * Example output:
- *   > 📔 DailyNote · 2020年日记
+ *   > 📔 笔记 · 示例文档
  *   > 📅 3天前 · 📝 1,234 字 · ⏱ 3 分钟
  *   > 🏷️ #日记 #反思
  */

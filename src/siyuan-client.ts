@@ -28,7 +28,7 @@ export interface SiyuanBlock {
 	subtype?: string;
 	/** For documents, this is the document title. For other blocks, the content text. */
 	content: string;
-	/** Human-readable path, e.g. "/DailyNote/2026-08-23". */
+	/** Human-readable path, e.g. "/笔记/2026-08-23". */
 	hpath?: string;
 	/** SiYuan internal path, e.g. "/20260823121500-abc123". */
 	path?: string;
@@ -49,7 +49,7 @@ interface SqlResponse {
 }
 
 export interface ExportMdResponse {
-	/** Human-readable path of the document, e.g. "/DailyNote/2026-08-23". */
+	/** Human-readable path of the document, e.g. "/笔记/2026-08-23". */
 	hPath: string;
 	/** Markdown content of the document. */
 	content: string;

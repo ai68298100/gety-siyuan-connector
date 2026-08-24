@@ -120,10 +120,10 @@ Deno.test('parseExcludeNotebooks returns empty set for falsy input', () => {
 
 Deno.test('cleanMarkdown strips YAML frontmatter', () => {
 	const input =
-		'---\ntitle: 2020年日记\ndate: 2024-05-22T09:02:18+08:00\n---\n\n# 2020年日记\n\n内容';
+		'---\ntitle: 示例文档\ndate: 2024-05-22T09:02:18+08:00\n---\n\n# 示例文档\n\n内容';
 	const result = cleanMarkdown(input);
 	assert.equal(result.startsWith('---'), false);
-	assert.match(result, /^# 2020年日记/);
+	assert.match(result, /^# 示例文档/);
 });
 
 Deno.test('cleanMarkdown removes zero-width characters', () => {
@@ -142,8 +142,8 @@ Deno.test('cleanMarkdown collapses 3+ blank lines into 2', () => {
 
 Deno.test('buildDisplayTitle appends notebook name', () => {
 	assert.equal(
-		buildDisplayTitle('2020年日记', 'DailyNote'),
-		'2020年日记 · DailyNote',
+		buildDisplayTitle('示例文档', '笔记'),
+		'示例文档 · 笔记',
 	);
 	assert.equal(buildDisplayTitle('标题', undefined), '标题');
 	assert.equal(buildDisplayTitle('标题', ''), '标题');
@@ -151,10 +151,10 @@ Deno.test('buildDisplayTitle appends notebook name', () => {
 
 Deno.test('formatPathBreadcrumb converts hpath to readable breadcrumb', () => {
 	assert.equal(
-		formatPathBreadcrumb('/安徽金宣/金宣-投资项目/公司名'),
-		'安徽金宣 / 金宣-投资项目 / 公司名',
+		formatPathBreadcrumb('/项目A/子目录/文档名'),
+		'项目A / 子目录 / 文档名',
 	);
-	assert.equal(formatPathBreadcrumb('/2020年日记'), '2020年日记');
+	assert.equal(formatPathBreadcrumb('/示例文档'), '示例文档');
 	assert.equal(formatPathBreadcrumb(undefined), '');
 	assert.equal(formatPathBreadcrumb(''), '');
 });
@@ -170,31 +170,31 @@ Deno.test('iconCodepointToEmoji converts hex codepoints to emoji', () => {
 
 Deno.test('stripDuplicateH1 removes leading H1 matching title', () => {
 	assert.equal(
-		stripDuplicateH1('# 2020年日记\n\n正文', '2020年日记'),
+		stripDuplicateH1('# 示例文档\n\n正文', '示例文档'),
 		'正文',
 	);
 	assert.equal(
-		stripDuplicateH1('# 2020年日记\n\n正文', '2020年日记 · DailyNote'),
+		stripDuplicateH1('# 示例文档\n\n正文', '示例文档 · 笔记'),
 		'正文',
 	);
 	// H1 doesn't match title — keep it.
 	assert.equal(
-		stripDuplicateH1('# 其他标题\n正文', '2020年日记'),
+		stripDuplicateH1('# 其他标题\n正文', '示例文档'),
 		'# 其他标题\n正文',
 	);
 });
 
 Deno.test('buildContentHeader generates blockquote with notebook info', () => {
 	const header = buildContentHeader(
-		'DailyNote',
+		'笔记',
 		'1f4d4',
-		'2020年日记',
+		'示例文档',
 		'2026-03-22T22:02:13.000Z',
 	);
 	assert.equal(header.startsWith('> '), true);
 	assert.equal(header.includes('📔'), true);
-	assert.equal(header.includes('DailyNote'), true);
-	assert.equal(header.includes('2020年日记'), true);
+	assert.equal(header.includes('笔记'), true);
+	assert.equal(header.includes('示例文档'), true);
 	assert.equal(header.includes('2026-03-22'), true);
 });
 
@@ -216,9 +216,9 @@ Deno.test('convertBlockRefs converts ((id "text")) to quoted reference', () => {
 });
 
 Deno.test('convertBlockRefs handles single quotes', () => {
-	const input = "((20240626111812-rqqp2j0 '疌泉新材料'))";
+	const input = "((20240626111812-rqqp2j0 '示例公司'))";
 	const result = convertBlockRefs(input);
-	assert.equal(result.includes('「疌泉新材料」'), true);
+	assert.equal(result.includes('「示例公司」'), true);
 	assert.equal(result.includes('siyuan://blocks/20240626111812-rqqp2j0'), true);
 });
 
@@ -310,9 +310,9 @@ Deno.test('estimateReadTime returns at least 1', () => {
 
 Deno.test('buildContentHeader includes word count and read time', () => {
 	const header = buildContentHeader(
-		'DailyNote',
+		'笔记',
 		'1f4d4',
-		'2020年日记',
+		'示例文档',
 		'2026-03-22T22:02:13.000Z',
 		'这是一段测试内容，用于验证字数统计功能。',
 		'日记,反思',

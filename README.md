@@ -9,8 +9,8 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 
 ## Features
 
-- **文档级索引** — 最小索引单位是思源文档（不索引细碎的内容块），1303+
-  文档全量可检索
+- **文档级索引** — 最小索引单位是思源文档（不索引细碎的内容块），
+  全部文档自动纳入检索
 - **Markdown 全文搜索** — 思源文档导出为 Markdown，支持 Gety 全文检索与高亮
 - **一键跳转编辑** — 点击搜索结果通过 `siyuan://blocks/<id>`
   协议在思源中打开对应文档
@@ -37,9 +37,9 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 搜索结果头部显示信息条：
 
 ```
-> 📔 DailyNote · 2020年日记
-> 📅 3天前 · 📝 3,847 字 · ⏱ 10 分钟
-> 🏷️ #日记 #反思 #自律
+> 📔 日记本 · 示例文档标题
+> 📅 3天前 · 📝 2,400 字 · ⏱ 6 分钟
+> 🏷️ #标签1 #标签2 #标签3
 ```
 
 ## Prerequisites / 前置要求
@@ -58,8 +58,8 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 4. Fill in the two required config fields (below).
 5. Confirm install, then click **Update now** for the first index.
 
-安装后在 Gety → Settings → Connectors 中点击 **Update now** 触发首次索引 （1300+
-文档约需 1-2 分钟）。之后默认每 30 分钟增量同步一次。
+安装后在 Gety → Settings → Connectors 中点击 **Update now** 触发首次索引
+（视文档数量而定，通常 1-2 分钟）。之后默认每 30 分钟增量同步一次。
 
 ## Configuration / 配置
 
@@ -81,8 +81,8 @@ notebooks fully searchable in Gety — alongside local files and other sources.
    自动打开思源并定位到该文档，可直接编辑。
 3. 可用元数据字段辅助筛选搜索：
    - `notebook` — 笔记本 ID
-   - `notebook_name` — 笔记本名（如 `DailyNote`、`在管基金`）
-   - `doc_path` — 文档路径（如 `安徽金宣 / 金宣-投资项目`）
+   - `notebook_name` — 笔记本名（如 `工作笔记`、`个人日记`）
+   - `doc_path` — 文档路径（如 `项目A / 子目录 / 文档`）
    - `tags` — 思源 `#标签`
    - `links` — 文档内双链指向的块 ID
 
