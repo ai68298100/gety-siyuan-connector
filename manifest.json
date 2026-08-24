@@ -1,20 +1,47 @@
 {
-	"id": "sample_dummy",
-	"name": "Gety Sample Connector",
-	"version": "0.1.0",
+	"id": "siyuan-gety",
+	"name": "Siyuan Note",
+	"version": "0.3.1",
 	"min_gety_app_version": "0.5.1",
 	"capabilities": ["data-source"],
 	"entry": "dist/main.js",
-	"description": "A minimal runnable sample connector that indexes a small Gety introduction.",
+	"icon": "icon.svg",
+	"description": "索引思源笔记文档，通过本地 HTTP API 全文检索。Indexes SiYuan Note documents via local HTTP API.",
 	"author": {
-		"name": "Gety"
+		"name": "WorkBuddy User"
 	},
 	"schedule": {
 		"strategy": "interval",
-		"interval_seconds": 3600
+		"interval_seconds": 1800
 	},
 	"doc_link": {
 		"kind": "url",
 		"field": "url"
+	},
+	"config": {
+		"fields": [
+			{
+				"id": "api_url",
+				"title": "API 地址",
+				"type": "text",
+				"required": true,
+				"default_value": "http://localhost:6806"
+			},
+			{
+				"id": "api_token",
+				"title": "API 令牌",
+				"type": "password",
+				"required": true
+			}
+		]
+	},
+	"schema": {
+		"extra_gety_indexed_fields": [
+			{ "field": "notebook", "strategy": "fast_text" },
+			{ "field": "notebook_name", "strategy": "fast_text" },
+			{ "field": "doc_path", "strategy": "fast_text" },
+			{ "field": "tags", "strategy": "fast_text" },
+			{ "field": "links", "strategy": "fast_text" }
+		]
 	}
 }
