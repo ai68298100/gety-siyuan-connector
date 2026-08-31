@@ -59,6 +59,18 @@ var SiYuanClient = class {
     const stmt = `SELECT id FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
+  /**
+   * Fetch full metadata for a specific set of document IDs. Used to retry
+   * documents whose export previously failed: incremental queries keyed on
+   * the `updated` timestamp cannot rediscover them once the cursor has
+   * advanced, so we re-fetch them by ID instead.
+   */
+  listDocsByIds(ids) {
+    if (ids.length === 0) return Promise.resolve([]);
+    const quoted = ids.map((id) => `'${this.escapeSql(id)}'`).join(", ");
+    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND id IN (${quoted}) ORDER BY path ASC`;
+    return this.query(stmt);
+  }
   /** Run an arbitrary SQL query against the SiYuan kernel. */
   async query(stmt) {
     return await this.post("/api/query/sql", { stmt });
@@ -391,9 +403,7 @@ function buildContentHeader(pathBreadcrumb, updatedAt, content, tags, compact = 
     lines.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
   }
   if (lines.length === 0) return "";
-  return `> ${lines.join("  \n> ")}
-
-`;
+  return `> ${lines.join("  \n> ")}\n\n`;
 }
 
 // src/index.ts
@@ -416,8 +426,7 @@ var SiYuanConnector = class extends Connector {
   debug(msg) {
     const path = this.debugLogPath;
     if (!path) return;
-    this.debugBuffer.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
-`);
+    this.debugBuffer.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${msg}\n`);
     if (this.debugBuffer.length >= 50) this.flushDebug();
   }
   flushDebug() {
@@ -464,10 +473,11 @@ var SiYuanConnector = class extends Connector {
   }
   async *poll() {
     this.debug(`poll start. concurrency=${EXPORT_CONCURRENCY}`);
-    const notebooks = (await this.client.lsNotebooks()).filter(
-      (nb) => !nb.closed
+    const allNotebooks = await this.client.lsNotebooks();
+    const notebooks = allNotebooks.filter((nb) => !nb.closed);
+    this.debug(
+      `poll: ${notebooks.length} open notebooks of ${allNotebooks.length} total`
     );
-    this.debug(`poll: ${notebooks.length} open notebooks`);
     const notebookNames = /* @__PURE__ */ new Map();
     const notebookIcons = /* @__PURE__ */ new Map();
     for (const nb of notebooks) {
@@ -475,7 +485,7 @@ var SiYuanConnector = class extends Connector {
       if (nb.icon) notebookIcons.set(nb.id, nb.icon);
     }
     const liveIds = /* @__PURE__ */ new Set();
-    for (const nb of notebooks) {
+    for (const nb of allNotebooks) {
       if (this.signal.aborted) return;
       const ids = await this.client.listDocIds(nb.id);
       for (const b of ids) liveIds.add(b.id);
@@ -484,6 +494,7 @@ var SiYuanConnector = class extends Connector {
     const previousDocs = this.lastState?.knownDocs ?? {};
     const previousIds = new Set(Object.keys(previousDocs));
     const lastMaxUpdated = this.lastState?.lastMaxUpdated;
+    const previousRetryIds = this.lastState?.pendingRetry ?? [];
     const changedDocs = [];
     let maxUpdated = lastMaxUpdated ?? "";
     for (const nb of notebooks) {
@@ -505,6 +516,13 @@ var SiYuanConnector = class extends Connector {
         if (b.updated && b.updated > maxUpdated) maxUpdated = b.updated;
       }
     }
+    let retryDocs = [];
+    if (previousRetryIds.length > 0) {
+      retryDocs = await this.client.listDocsByIds(previousRetryIds);
+      this.debug(
+        `poll: retrying ${retryDocs.length} previously failed docs (wanted ${previousRetryIds.length})`
+      );
+    }
     const deletedDocIds = [];
     for (const id of previousIds) {
       if (!liveIds.has(id)) deletedDocIds.push(id);
@@ -513,18 +531,24 @@ var SiYuanConnector = class extends Connector {
       this.debug(`poll: ${deletedDocIds.length} docs to delete`);
       yield { updates: deletedDocIds.map((id) => del(id)) };
     }
-    const docsToFetch = [];
+    const docsByID = /* @__PURE__ */ new Map();
     for (const doc of changedDocs) {
       const prevUpdated = previousDocs[doc.id];
       if (prevUpdated === void 0 || prevUpdated !== doc.updated) {
-        docsToFetch.push(doc);
+        docsByID.set(doc.id, doc);
       }
     }
+    for (const doc of retryDocs) {
+      docsByID.set(doc.id, doc);
+    }
+    const docsToFetch = Array.from(docsByID.values());
     this.debug(
-      `poll: ${docsToFetch.length} docs to fetch (new/updated), ${deletedDocIds.length} to delete`
+      `poll: ${docsToFetch.length} docs to fetch (new/updated/retry), ${deletedDocIds.length} to delete`
     );
     const nextDocs = { ...previousDocs };
     for (const id of deletedDocIds) delete nextDocs[id];
+    const nextRetry = new Set(previousRetryIds);
+    for (const id of deletedDocIds) nextRetry.delete(id);
     let yielded = 0;
     for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
       if (this.signal.aborted) return;
@@ -533,11 +557,16 @@ var SiYuanConnector = class extends Connector {
         chunk.map(async (doc) => {
           try {
             const exported = await this.client.exportMdContent(doc.id);
-            return { doc, markdown: exported.content ?? "" };
+            return {
+              doc,
+              markdown: exported.content ?? "",
+              exported: true
+            };
           } catch (err) {
             return {
               doc,
-              markdown: `<!-- export failed: ${err.message} -->`
+              markdown: `<!-- export failed: ${err.message} -->`,
+              exported: false
             };
           }
         })
@@ -546,7 +575,12 @@ var SiYuanConnector = class extends Connector {
         (r) => this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons)
       );
       for (const r of chunkResults) {
-        if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
+        if (r.exported) {
+          if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
+          nextRetry.delete(r.doc.id);
+        } else {
+          nextRetry.add(r.doc.id);
+        }
       }
       yielded += batch.length;
       this.debug(
@@ -557,7 +591,8 @@ var SiYuanConnector = class extends Connector {
         state: {
           knownDocs: nextDocs,
           lastMaxUpdated: maxUpdated,
-          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString()
+          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString(),
+          pendingRetry: Array.from(nextRetry)
         }
       };
     }
@@ -568,7 +603,8 @@ var SiYuanConnector = class extends Connector {
         state: {
           knownDocs: nextDocs,
           lastMaxUpdated: maxUpdated,
-          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString()
+          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString(),
+          pendingRetry: Array.from(nextRetry)
         }
       };
     }
