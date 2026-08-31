@@ -29,10 +29,10 @@ jobs:
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
           PKG_NAME="gety-siyuan-connector-${VERSION}"
-          mkdir -p "release/${PKG_NAME}"
+          mkdir -p "release/${PKG_NAME}/dist"
           cp manifest.json "release/${PKG_NAME}/"
-          cp dist/main.js "release/${PKG_NAME}/"
-          cp dist/main.js.map "release/${PKG_NAME}/"
+          cp dist/main.js "release/${PKG_NAME}/dist/"
+          cp dist/main.js.map "release/${PKG_NAME}/dist/"
           cp icon.svg icon.png "release/${PKG_NAME}/"
           cp README.md LICENSE CHANGELOG.md "release/${PKG_NAME}/"
           cd release
