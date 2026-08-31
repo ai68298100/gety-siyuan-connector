@@ -2,6 +2,62 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-08-31
+
+### Added
+
+- **Concurrent Markdown export** — up to 6 `exportMdContent` requests run in
+  parallel during a poll, cutting first-time index time by roughly 3-5x
+- **Incremental SQL query** (`listDocBlocksSince`) — steady-state polls fetch
+  only documents whose `updated` timestamp advanced since the last sync,
+  instead of scanning every notebook
+- **Lightweight ID query** (`listDocIds`) — deletion detection now pulls only
+  document IDs, avoiding a full metadata scan
+- **Frontmatter tag extraction** — tags declared in the YAML frontmatter
+  (`tags: [a, b]`) are now indexed; previously they were discarded with the
+  frontmatter
+- **Code-block protection** — fenced code, inline code, and math spans are
+  shielded from all regex transforms so `==`, `(( ))`, HTML tags, and blank
+  lines inside code are preserved verbatim
+- **Unified block-ID pattern** — block references and links now match both
+  legacy `YYYYMMDDHHmmss-hash` IDs and newer 20+ character pure-alphanumeric
+  IDs
+- **Local asset classification** — workspace files are marked by type:
+  images 🖼, audio 🎵, video 🎬, other attachments 📎
+- **Compact content header** — the blockquote header now shows only path and
+  date by default, leaving more preview room for the document body
+- **Buffered debug logging** — log lines accumulate in memory and flush in
+  batches, eliminating per-line file IO
+
+### Fixed
+
+- **Code blocks were corrupted by cleaning passes** — `==` inside code became
+  `**`, `((id))` was rewritten, HTML tags stripped, blank lines collapsed
+- **Frontmatter tags were silently dropped** — `stripFrontmatter` removed the
+  YAML block before tags could be read
+- **`extractTags` matched code comments** — `#include`, Python `# comment`,
+  and shell comments were indexed as tags
+- **Block references with new-style IDs were left as raw markup**
+
+### Changed
+
+- Dynamic batch size (20–100) scales with the number of changed documents
+- Content header uses compact mode (path + date only); word count, read time,
+  and tags remain available via `metadata`
+- `convertLocalImages` is now a thin alias for `convertLocalAssets`
+
+### Removed
+
+- Dead code: `buildBlockTitle`, `blockTypeEmoji`, `extractParentDocId`,
+  `clampPositiveNumber`, `parseExcludeNotebooks`, `listContentBlocks`
+  (leftovers from the removed block-level indexing mode)
+
+### Tests
+
+- Expanded from 37 to 56 unit tests, covering code-block protection,
+  frontmatter tags, new ID formats, asset classification, compact headers,
+  and end-to-end pipeline cleanliness
+
 ## [0.3.3] - 2026-08-31
 
 ### Fixed
