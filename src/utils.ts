@@ -4,11 +4,18 @@
  */
 
 /**
+ * Unified SiYuan block ID pattern.
+ *
+ * SiYuan historically used `YYYYMMDDHHmmss-<hash>` (14-digit timestamp +
+ * 7+ alphanumerics). Newer workspaces may emit 20+ character pure-alphanumeric
+ * IDs. Both shapes must be matched wherever block references appear.
+ */
+const SIYUAN_ID = '(?:[0-9]{14}-[a-z0-9]+|[a-z0-9]{20,})';
+const SIYUAN_ID_RE = new RegExp(SIYUAN_ID, 'i');
+
+/**
  * Convert a SiYuan "YYYYMMDDHHmmss" local-time timestamp to RFC 3339 UTC.
  * Returns undefined if the input is missing or malformed.
- *
- * SiYuan stores block timestamps as a 14-digit string in the user's local
- * timezone. We parse it as local time, then emit UTC via Date.toISOString().
  */
 export function toRfc3339(ts: string | undefined): string | undefined {
 	if (!ts || ts.length !== 14) return undefined;
@@ -24,18 +31,80 @@ export function toRfc3339(ts: string | undefined): string | undefined {
 	return new Date(ms).toISOString();
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Code-block protection
+//
+// Many cleaning steps are global regex replaces that would corrupt source
+// code inside fenced blocks or inline code.  protectCode() swaps those spans
+// for NUL-delimited placeholders; restoreCode() swaps them back after all
+// transforms have run.
+// ───────────────────────────────────────────────────────────────────────────
+
+const CODE_FENCE_RE = /```[\s\S]*?```/g;
+const INLINE_CODE_RE = /`[^`\n]+`/g;
+const MATH_BLOCK_RE = /\$\$[\s\S]*?\$\$/g;
+const MATH_INLINE_RE = /\$[^$\n]+\$/g;
+const PLACEHOLDER_RE = /\x00(?:FENCE|INLINE|MATHB|MATHI)\d+\x00/g;
+
+interface ProtectedState {
+	clean: string;
+	restore: (text: string) => string;
+}
+
+/**
+ * Replace fenced code blocks, inline code, and math spans with placeholders
+ * so downstream regex transforms cannot touch them.  Returns the cleaned
+ * text and a restore function.
+ */
+export function protectCode(markdown: string): ProtectedState {
+	const store: string[] = [];
+	let result = markdown;
+
+	const stash = (re: RegExp, prefix: string) => {
+		result = result.replace(re, (match) => {
+			const idx = store.length;
+			store.push(match);
+			return `\x00${prefix}${idx}\x00`;
+		});
+	};
+
+	// Order matters: fenced blocks first (they may contain backticks inside),
+	// then math blocks, then inline code, then inline math.
+	stash(CODE_FENCE_RE, 'FENCE');
+	stash(MATH_BLOCK_RE, 'MATHB');
+	stash(INLINE_CODE_RE, 'INLINE');
+	stash(MATH_INLINE_RE, 'MATHI');
+
+	return {
+		clean: result,
+		restore: (text: string) =>
+			text.replace(PLACEHOLDER_RE, (token) => {
+				const idx = parseInt(token.match(/\d+/)![0], 10);
+				return store[idx] ?? token;
+			}),
+	};
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tag extraction
+// ───────────────────────────────────────────────────────────────────────────
+
 /**
  * Extract `#tag` style tags from Markdown content. Returns a comma-joined
  * string to keep the metadata value small and searchable via fast_text.
+ *
+ * Code blocks and inline code are protected first so `#include` or shell
+ * comments are not mistaken for tags.
  *
  * Supports ASCII and CJK tag names. Caps at 20 tags.
  */
 export function extractTags(markdown: string): string {
 	if (!markdown) return '';
+	const { clean, restore: _restore } = protectCode(markdown);
 	const tags = new Set<string>();
 	const tagRe = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5][\w\u4e00-\u9fa5-]*)/g;
 	let m: RegExpExecArray | null;
-	while ((m = tagRe.exec(markdown)) !== null) {
+	while ((m = tagRe.exec(clean)) !== null) {
 		tags.add(m[1]);
 		if (tags.size >= 20) break;
 	}
@@ -43,66 +112,55 @@ export function extractTags(markdown: string): string {
 }
 
 /**
- * SiYuan internal path looks like
- * "/20260101000008-hhhhhhh/20260823130000-def456".
- * The last segment's ID is the document ID for that path. Returns undefined
- * for the root or malformed paths.
+ * Parse tags from a YAML frontmatter block.  SiYuan stores document tags in
+ * the frontmatter `tags:` field, either as a flow sequence `[a, b]` or as
+ * plain comma-separated text.  Returns a comma-joined string.
  */
-export function extractParentDocId(
-	path: string | undefined,
-): string | undefined {
-	if (!path) return undefined;
-	const segments = path.split('/').filter(Boolean);
-	if (segments.length === 0) return undefined;
-	const last = segments[segments.length - 1];
-	const match = last.match(/(\d{14}-[a-z0-9]+|[a-z0-9]{20,})/i);
-	return match ? match[1] : undefined;
-}
-
-/**
- * Build a human-readable title for a content block from its raw content.
- * Truncates to 80 chars; falls back to a synthetic type-based title.
- */
-export function buildBlockTitle(
-	content: string,
-	type: string,
-	subtype?: string,
-	id?: string,
-): string {
-	const text = (content ?? '').trim();
-	if (text) {
-		return text.length > 80 ? text.slice(0, 77) + '...' : text;
-	}
-	const idSuffix = id ? ` ${id}` : '';
-	return subtype ? `${type}:${subtype}${idSuffix}` : `${type}${idSuffix}`;
-}
-
-/** Clamp a positive integer with fallback. Used for page_size config. */
-export function clampPositiveNumber(
-	value: number | undefined,
-	fallback: number,
-): number {
-	if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-		return fallback;
-	}
-	return Math.floor(value);
-}
-
-/** Parse comma-separated notebook IDs into a Set for exclusion filtering. */
-export function parseExcludeNotebooks(value: string | undefined): Set<string> {
-	if (!value) return new Set();
-	return new Set(
-		value
+export function extractFrontmatterTags(markdown: string): string {
+	if (!markdown) return '';
+	const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+	if (!fm) return '';
+	const body = fm[1];
+	// Flow sequence: tags: [tag1, tag2]
+	let m = body.match(/^tags:\s*\[([^\]]*)\]/m);
+	if (m) {
+		return m[1]
 			.split(',')
-			.map((s) => s.trim())
-			.filter((s) => s.length > 0),
-	);
+			.map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+			.filter(Boolean)
+			.join(',');
+	}
+	// Block sequence:
+	//   tags:
+	//     - tag1
+	//     - tag2
+	m = body.match(/^tags:\s*\n((?:\s*-\s+.+\n?)+)/m);
+	if (m) {
+		return m[1]
+			.split('\n')
+			.map((line) => line.replace(/^\s*-\s+/, '').trim().replace(/^['"]|['"]$/g, ''))
+			.filter(Boolean)
+			.join(',');
+	}
+	// Scalar: tags: tag1, tag2
+	m = body.match(/^tags:\s*(.+)$/m);
+	if (m) {
+		return m[1]
+			.split(',')
+			.map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+			.filter(Boolean)
+			.join(',');
+	}
+	return '';
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Markdown cleaning pipeline
+// ───────────────────────────────────────────────────────────────────────────
 
 /**
  * Strip a leading YAML frontmatter block (`---\n...\n---\n`) from Markdown
- * content exported by SiYuan. The frontmatter is metadata noise in search
- * previews and should not be indexed as visible content.
+ * content exported by SiYuan.
  */
 export function stripFrontmatter(markdown: string): string {
 	if (!markdown) return '';
@@ -115,166 +173,135 @@ export function stripFrontmatter(markdown: string): string {
 
 /**
  * Remove zero-width and other invisible Unicode characters that SiYuan
- * inserts between blocks. These render as blank lines or invisible spacing
- * in search previews.
- *
- * Removes: U+200B (ZWSP), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF (BOM/ZWNBSP),
- * U+2060 (WJ), and U+00AD (SHY).
+ * inserts between blocks.
  */
 export function stripInvisibleChars(text: string): string {
 	if (!text) return '';
-	// eslint-disable-next-line no-misleading-character-class
 	return text.replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD]/g, '');
 }
 
 /**
- * Clean up SiYuan-exported Markdown for display: strip frontmatter, remove
- * invisible characters, convert SiYuan-specific syntax, collapse blanks.
+ * Strip inline HTML tags that SiYuan embeds in exported Markdown.
+ * Enhanced to cover table/list/media wrappers that HTML blocks may emit.
  */
-export function cleanMarkdown(markdown: string): string {
+export function stripInlineHtml(markdown: string): string {
 	if (!markdown) return '';
-	let result = stripFrontmatter(markdown);
-	result = stripInvisibleChars(result);
-	result = stripInlineHtml(result);
-	result = convertBlockRefs(result);
-	result = cleanEmbedBlocks(result);
-	result = convertHighlights(result);
-	result = convertLocalImages(result);
-	// Collapse 3+ consecutive newlines into 2 (one blank line).
-	result = result.replace(/\n{3,}/g, '\n\n');
-	return result.trim();
+	return markdown
+		// Line breaks become real newlines.
+		.replace(/<br\s*\/?>/gi, '\n')
+		// Images are workspace-local and unreachable; drop the tag.
+		.replace(/<img\b[^>]*>/gi, '')
+		// Block-level wrappers: drop tags, keep content, add line break.
+		.replace(
+			/<\/?(?:div|p|section|article|header|footer|nav|aside|figure|figcaption|table|thead|tbody|tr|td|th|ul|ol|li|dl|dt|dd|blockquote|pre|h[1-6])\b[^>]*>/gi,
+			'\n',
+		)
+		// Inline wrappers: drop tags, keep inner text.
+		.replace(
+			/<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var|a|button|input|select|textarea|iframe|style|script|video|audio|source|track)\b[^>]*>/gi,
+			'',
+		);
 }
 
 /**
  * Convert SiYuan block references `((block-id "text"))` or `((block-id 'text'))`
  * into an inline quoted reference with a link back to the source block.
  *
- * Inline style is used (rather than blockquote) so references embedded in a
- * sentence flow naturally without breaking the paragraph structure.
- *
- * Examples:
- *   ((20260101000001-aaaaaaa "引用文本"))
- * →   「引用文本」[↗](siyuan://blocks/20260101000001-aaaaaaa)
- *
- *   上会项目：((id1 "公司A"))、((id2 "公司B"))
- * →  上会项目：「公司A」[↗](siyuan://blocks/id1)、「公司B」[↗](siyuan://blocks/id2)
+ * Uses the unified SIYUAN_ID pattern so both legacy and new ID shapes match.
  */
 export function convertBlockRefs(markdown: string): string {
 	if (!markdown) return '';
-	// The quoted text is optional: SiYuan also emits bare `((block-id))`
-	// references when the source block has no text anchor. Leaving those
-	// untouched would print raw IDs in the preview.
-	return markdown.replace(
-		/\(\(([0-9]{14}-[a-z0-9]+)(?:\s+["']([^"']*)["'])?\s*\)\)/g,
-		(_, blockId: string, text: string | undefined) => {
-			const trimmed = (text ?? '').trim();
-			if (!trimmed) return `[↗](siyuan://blocks/${blockId})`;
-			return `「${trimmed}」[↗](siyuan://blocks/${blockId})`;
-		},
+	const re = new RegExp(
+		`\\(\\((${SIYUAN_ID})(?:\\s+["']([^"']*)["'])?\\s*\\)\\)`,
+		'gi',
 	);
-}
-
-/**
- * Strip inline HTML tags that SiYuan embeds in exported Markdown, such as
- * `<span data-type="text">📄</span>`. Keeps the inner text but removes the
- * tags so they don't render as raw HTML in previews.
- */
-export function stripInlineHtml(markdown: string): string {
-	if (!markdown) return '';
-	return markdown
-		// Line breaks become real newlines so text does not run together.
-		.replace(/<br\s*\/?>/gi, '\n')
-		// Images are workspace-local and unreachable from the index; drop the
-		// tag here so no raw <img> markup leaks into the preview.
-		.replace(/<img\b[^>]*>/gi, '')
-		// Block-level wrappers: drop the tags, keep the content, and add a line
-		// break so adjacent paragraphs do not merge.
-		.replace(/<\/?(?:div|p)\b[^>]*>/gi, '\n')
-		// Inline wrappers: drop the tags, keep the inner text.
-		.replace(
-			/<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var)\b[^>]*>/gi,
-			'',
-		);
+	return markdown.replace(re, (_, blockId: string, text: string | undefined) => {
+		const trimmed = (text ?? '').trim();
+		if (!trimmed) return `[↗](siyuan://blocks/${blockId})`;
+		return `「${trimmed}」[↗](siyuan://blocks/${blockId})`;
+	});
 }
 
 /**
  * Clean SiYuan embed block syntax `{{{row\n...\n}}}` by stripping the
- * markers and keeping the inner content, wrapped in a blockquote for visual
- * distinction (embedded content is quoted from another location).
+ * markers and keeping the inner content, wrapped in a blockquote.
  *
- * Example:
- *   {{{row
- *   嵌入内容
- *   }}}
- * →
- *   > 嵌入内容
+ * Enhanced to handle nested attributes and empty reference embeds.
  */
 export function cleanEmbedBlocks(markdown: string): string {
 	if (!markdown) return '';
-	// Covers all the shapes SiYuan emits:
-	//   {{{row\n内容\n}}}                  plain row embed with content
-	//   {{{col\n内容\n}}}                  column layout embed
-	//   {{{row id="2026...-abc123"\n\n}}}  reference embed, no inlined content
-	return markdown.replace(
-		/\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi,
-		(_match, attrs: string, body: string) => {
-			const inner = body.trim();
-			if (inner) {
-				// Embedded content is quoted from another location.
-				return inner
-					.split('\n')
-					.map((l) => `> ${l.trim()}`)
-					.join('\n');
-			}
-			// Empty embed: it is really a reference to another block. Recover
-			// the id when present so the link survives; otherwise drop the
-			// markers so they don't show up as noise.
-			const idMatch = attrs.match(/[0-9]{14}-[a-z0-9]+/i);
-			if (idMatch) return `[↗](siyuan://blocks/${idMatch[0]})`;
-			return '';
-		},
-	);
+	const re = /\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi;
+	return markdown.replace(re, (_match, attrs: string, body: string) => {
+		const inner = body.trim();
+		if (inner) {
+			return inner
+				.split('\n')
+				.map((l) => `> ${l.trim()}`)
+				.join('\n');
+		}
+		// Empty embed: recover the referenced block id when present.
+		const idMatch = attrs.match(new RegExp(SIYUAN_ID, 'i'));
+		if (idMatch) return `[↗](siyuan://blocks/${idMatch[0]})`;
+		return '';
+	});
 }
 
 /**
  * Convert SiYuan highlight syntax `==text==` to bold `**text**`.
- *
- * Standard Markdown has no highlight syntax, so `==` markers would render
- * literally. Bold is the closest available emphasis that preserves the
- * author's intent that the text stands out.
  */
 export function convertHighlights(markdown: string): string {
 	if (!markdown) return '';
-	// Requires non-`=` content so setext headings (`===`) are not touched.
 	return markdown.replace(/==([^\n=]+)==/g, '**$1**');
 }
 
 /**
- * Replace images that point at workspace-local assets with a text marker.
+ * Replace workspace-local assets (images, audio, video, attachments) with
+ * text markers.  Remote URLs (http/https) are left intact.
  *
- * SiYuan stores images under `assets/` inside its workspace. Those paths are
- * not reachable from the search index, so keeping the Markdown image would
- * render as a broken image. Remote images (http/https) are left intact.
+ * Extension mapping:
+ *   images  → 🖼 caption
+ *   audio   → 🎵 filename
+ *   video   → 🎬 filename
+ *   other   → 📎 filename
  */
-export function convertLocalImages(markdown: string): string {
+export function convertLocalAssets(markdown: string): string {
 	if (!markdown) return '';
 	return markdown.replace(
-		/!\[([^\]]*)\]\((?!https?:)([^)]*)\)/g,
-		(_, alt: string) => {
+		/!\[([^\]]*)\]\((?!https?:)([^)]+)\)/g,
+		(_, alt: string, url: string) => {
 			const caption = alt.trim();
-			return caption ? `🖼 ${caption}` : '🖼 图片';
+			const ext = (url.split('.').pop() || '').toLowerCase();
+			const name = url.split('/').pop() || url;
+			if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)) {
+				return caption ? `🖼 ${caption}` : '🖼 图片';
+			}
+			if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) {
+				return `🎵 ${caption || name}`;
+			}
+			if (['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv'].includes(ext)) {
+				return `🎬 ${caption || name}`;
+			}
+			return `📎 ${caption || name}`;
 		},
 	);
 }
 
 /**
+ * @deprecated Use convertLocalAssets instead.  Kept as a thin alias for
+ * backward compatibility with existing tests.
+ */
+export function convertLocalImages(markdown: string): string {
+	return convertLocalAssets(markdown);
+}
+
+/**
  * Extract all siyuan://blocks/ link targets from Markdown content.
- * Returns a comma-joined string of block IDs for metadata storage.
+ * Uses the unified SIYUAN_ID pattern.
  */
 export function extractLinks(markdown: string): string {
 	if (!markdown) return '';
 	const ids = new Set<string>();
-	const linkRe = /siyuan:\/\/blocks\/([0-9]{14}-[a-z0-9]+)/g;
+	const linkRe = new RegExp(`siyuan://blocks/(${SIYUAN_ID})`, 'gi');
 	let m: RegExpExecArray | null;
 	while ((m = linkRe.exec(markdown)) !== null) {
 		ids.add(m[1]);
@@ -284,35 +311,35 @@ export function extractLinks(markdown: string): string {
 }
 
 /**
- * Map a SiYuan block type code to a display emoji for visual differentiation
- * in search results.
+ * Clean up SiYuan-exported Markdown for display.
  *
- * p = paragraph 📝, h = heading 🔖, l = list item 📋, c = code 💻,
- * q = quote 💬, t = table 📊, m = math ∑, d = document 📄, s = super 💠,
- * i = list item (ordered) 🔢, b = bookmark 🔖
+ * Pipeline:
+ *   1. Protect code blocks and math spans
+ *   2. Strip frontmatter, invisible chars, inline HTML
+ *   3. Convert block refs, embed blocks, highlights, local assets
+ *   4. Collapse blank lines
+ *   5. Restore code blocks and math
  */
-const BLOCK_TYPE_EMOJI: Record<string, string> = {
-	p: '📝',
-	h: '🔖',
-	l: '📋',
-	i: '🔢',
-	c: '💻',
-	q: '💬',
-	t: '📊',
-	m: '∑',
-	d: '📄',
-	s: '💠',
-	b: '🔖',
-};
-
-export function blockTypeEmoji(type: string | undefined): string {
-	if (!type) return '';
-	return BLOCK_TYPE_EMOJI[type] ?? '';
+export function cleanMarkdown(markdown: string): string {
+	if (!markdown) return '';
+	const { clean, restore } = protectCode(markdown);
+	let result = stripFrontmatter(clean);
+	result = stripInvisibleChars(result);
+	result = stripInlineHtml(result);
+	result = convertBlockRefs(result);
+	result = cleanEmbedBlocks(result);
+	result = convertHighlights(result);
+	result = convertLocalAssets(result);
+	result = result.replace(/\n{3,}/g, '\n\n');
+	return restore(result.trim());
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Display helpers
+// ───────────────────────────────────────────────────────────────────────────
 
 /**
  * Format an RFC 3339 timestamp as a relative date string in Chinese.
- * < 1h → "刚刚", < 24h → "N小时前", < 7d → "N天前", else → "YYYY-MM-DD".
  */
 export function formatRelativeDate(rfc3339: string | undefined): string {
 	if (!rfc3339) return '';
@@ -330,25 +357,9 @@ export function formatRelativeDate(rfc3339: string | undefined): string {
 }
 
 /**
- * Count words in mixed CJK + Latin text. CJK characters count as 1 word each;
- * Latin words (sequences of latin letters/digits) count as 1 word each.
+ * Count CJK characters and Latin words separately.
  */
-export function countWords(text: string): number {
-	if (!text) return 0;
-	const cjk =
-		(text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g) ?? []).length;
-	const latin = (text.match(/[a-zA-Z0-9]+/g) ?? []).length;
-	return cjk + latin;
-}
-
-/**
- * Count CJK characters and Latin words separately. Useful for reading-time
- * estimates, where the two scripts are read at very different speeds.
- */
-export function countWordsDetailed(text: string): {
-	cjk: number;
-	latin: number;
-} {
+export function countWordsDetailed(text: string): { cjk: number; latin: number } {
 	if (!text) return { cjk: 0, latin: 0 };
 	const cjk =
 		(text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g) ?? []).length;
@@ -357,17 +368,22 @@ export function countWordsDetailed(text: string): {
 }
 
 /**
- * Estimate reading time in minutes. Assumes ~400 CJK chars or ~200 English
- * words per minute. Returns at least 1.
+ * Count words in mixed CJK + Latin text.
+ */
+export function countWords(text: string): number {
+	const { cjk, latin } = countWordsDetailed(text);
+	return cjk + latin;
+}
+
+/**
+ * Estimate reading time in minutes (single rate).
  */
 export function estimateReadTime(wordCount: number): number {
 	return Math.max(1, Math.ceil(wordCount / 400));
 }
 
 /**
- * Estimate reading time for mixed CJK/Latin content, scoring each script at
- * its own pace (~400 CJK chars/min, ~200 Latin words/min). This avoids
- * under-reporting English-heavy documents. Returns at least 1.
+ * Estimate reading time for mixed CJK/Latin content at per-script rates.
  */
 export function estimateReadTimeDetailed(cjk: number, latin: number): number {
 	const minutes = cjk / 400 + latin / 200;
@@ -375,8 +391,7 @@ export function estimateReadTimeDetailed(cjk: number, latin: number): number {
 }
 
 /**
- * Truncate an overlong document title so it cannot blow out the layout of a
- * search result row. Uses a single ellipsis character to save width.
+ * Truncate an overlong document title.
  */
 export function truncateTitle(title: string, maxLength = 60): string {
 	const text = (title ?? '').trim();
@@ -386,7 +401,6 @@ export function truncateTitle(title: string, maxLength = 60): string {
 
 /**
  * Build a display title that includes the notebook name for context.
- * Example: "示例文档 · 笔记"
  */
 export function buildDisplayTitle(
 	docTitle: string,
@@ -397,8 +411,7 @@ export function buildDisplayTitle(
 }
 
 /**
- * Convert a SiYuan hPath (e.g. "/示例文档" or "/项目A/子目录/文档名")
- * into a readable breadcrumb string. Returns the path without leading slash.
+ * Convert a SiYuan hPath into a readable breadcrumb string.
  */
 export function formatPathBreadcrumb(
 	hpath: string | undefined,
@@ -406,19 +419,16 @@ export function formatPathBreadcrumb(
 ): string {
 	if (!hpath) return '';
 	let segments = hpath.split('/').filter(Boolean);
-
-	// SiYuan's hpath may or may not start with the notebook name depending on
-	// the endpoint. The notebook is already shown in the title, so drop that
-	// segment when it matches to avoid printing it twice.
 	if (
-		opts?.dropFirst && segments.length > 1 &&
+		opts?.dropFirst &&
+		segments.length > 1 &&
 		segments[0] === opts.dropFirst
 	) {
 		segments = segments.slice(1);
 	}
-	// The last segment is the document itself, already shown as the title.
 	if (
-		opts?.dropLast && segments.length > 1 &&
+		opts?.dropLast &&
+		segments.length > 1 &&
 		segments[segments.length - 1] === opts.dropLast
 	) {
 		segments = segments.slice(0, -1);
@@ -428,9 +438,6 @@ export function formatPathBreadcrumb(
 
 /**
  * Convert a SiYuan notebook icon codepoint string to an emoji character.
- * SiYuan stores icons as hyphen-separated hex codepoints, e.g. "1f4d4" for
- * 📔, or "2702-fe0f" for ✂️ (scissors + variation selector).
- * Returns empty string if the input is empty or malformed.
  */
 export function iconCodepointToEmoji(icon: string | undefined): string {
 	if (!icon) return '';
@@ -445,16 +452,12 @@ export function iconCodepointToEmoji(icon: string | undefined): string {
 
 /**
  * Remove a leading H1 heading from Markdown if it matches the document title.
- * SiYuan exports always start with `# <title>`, but the title is already in
- * the WireDoc `title` field, so showing it again in the content preview is
- * redundant.
  */
 export function stripDuplicateH1(markdown: string, title: string): string {
 	if (!markdown || !title) return markdown;
 	const lines = markdown.split('\n');
 	if (lines.length === 0) return markdown;
 	const firstLine = lines[0].trim();
-	// Match "# <title>" or "# <title without notebook suffix>"
 	const titleCore = title.split(' · ')[0];
 	if (firstLine === `# ${title}` || firstLine === `# ${titleCore}`) {
 		return lines.slice(1).join('\n').replace(/^\n+/, '');
@@ -463,47 +466,43 @@ export function stripDuplicateH1(markdown: string, title: string): string {
 }
 
 /**
- * Build a Markdown blockquote header rendered above the document body.
+ * Build a compact Markdown blockquote header rendered above the document body.
  *
- * The title already carries "<notebook icon> <doc title> · <notebook>", so
- * this header deliberately omits the notebook name and icon — repeating them
- * here made every search result show the same context twice. It shows only
- * the parent path (when the document is nested), freshness/volume metadata,
- * and tags.
- *
- * Example output:
- *   > 📁 子目录
- *   > 📅 3天前 · 📝 1,234 字 · ⏱ 3 分钟
- *   > 🏷️ #日记 #反思
+ * When `compact` is true, only the path and freshness line are emitted (no
+ * word count, read time, or tags) — useful when the search preview window is
+ * small and the body should dominate.
  */
 export function buildContentHeader(
 	pathBreadcrumb: string | undefined,
 	updatedAt: string | undefined,
 	content?: string,
 	tags?: string,
+	compact = false,
 ): string {
 	const lines: string[] = [];
 	if (pathBreadcrumb) lines.push(`📁 ${pathBreadcrumb}`);
 
-	const metaParts: string[] = [];
-	if (updatedAt) metaParts.push(`📅 ${formatRelativeDate(updatedAt)}`);
-	if (content) {
-		const { cjk, latin } = countWordsDetailed(content);
-		const wc = cjk + latin;
-		if (wc > 0) {
-			// Fixed locale keeps the thousands separator deterministic
-			// regardless of the runtime's regional settings.
-			metaParts.push(`📝 ${wc.toLocaleString('en-US')} 字`);
-			metaParts.push(`⏱ ${estimateReadTimeDetailed(cjk, latin)} 分钟`);
+	if (!compact) {
+		const metaParts: string[] = [];
+		if (updatedAt) metaParts.push(`📅 ${formatRelativeDate(updatedAt)}`);
+		if (content) {
+			const { cjk, latin } = countWordsDetailed(content);
+			const wc = cjk + latin;
+			if (wc > 0) {
+				metaParts.push(`📝 ${wc.toLocaleString('en-US')} 字`);
+				metaParts.push(`⏱ ${estimateReadTimeDetailed(cjk, latin)} 分钟`);
+			}
 		}
-	}
-	if (metaParts.length > 0) lines.push(metaParts.join(' · '));
+		if (metaParts.length > 0) lines.push(metaParts.join(' · '));
 
-	if (tags) {
-		const tagList = tags.split(',').filter(Boolean).slice(0, 10);
-		if (tagList.length > 0) {
-			lines.push('🏷️ ' + tagList.map((t) => `#${t}`).join(' '));
+		if (tags) {
+			const tagList = tags.split(',').filter(Boolean).slice(0, 10);
+			if (tagList.length > 0) {
+				lines.push('🏷️ ' + tagList.map((t) => `#${t}`).join(' '));
+			}
 		}
+	} else if (updatedAt) {
+		lines.push(`📅 ${formatRelativeDate(updatedAt)}`);
 	}
 
 	if (lines.length === 0) return '';

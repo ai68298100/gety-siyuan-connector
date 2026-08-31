@@ -10,6 +10,7 @@ import {
 	buildContentHeader,
 	buildDisplayTitle,
 	cleanMarkdown,
+	extractFrontmatterTags,
 	extractLinks,
 	extractTags,
 	formatPathBreadcrumb,
@@ -23,35 +24,30 @@ import {
  * Persisted state across poll cycles.
  *
  * knownDocs maps doc_id -> updated timestamp, used both to detect deletions
- * (ids present in state but missing from the source list) and to skip
- * content fetches for documents that haven't changed.
+ * and to skip content fetches for unchanged documents.
+ * lastMaxUpdated is the highest `updated` timestamp seen so far, used as the
+ * lower bound for incremental SQL queries.
  * lastSyncAt is informational only.
  */
 type SiyuanState = {
 	knownDocs?: Record<string, string>;
+	lastMaxUpdated?: string;
 	lastSyncAt?: string;
 };
 
 const DOC_TYPE = 'siyuan:doc';
 
-/** Shown instead of the title for documents with no exported content, so an
- * empty note does not just echo its own title back at the reader. */
+/** Number of concurrent exportMdContent requests during a poll. */
+const EXPORT_CONCURRENCY = 6;
+
+/** Shown instead of the title for documents with no exported content. */
 const EMPTY_DOC_PLACEHOLDER = '*（暂无内容）*';
 
-/**
- * Resolve the optional debug-log destination from the environment.
- *
- * Logging is OFF unless SIYUAN_CONNECTOR_DEBUG_LOG is set. Writing to a
- * hardcoded per-user path (as an earlier revision did) leaked a Windows
- * account name into a published connector and failed outright on other
- * machines, so the destination is now explicit and opt-in.
- */
 function readDebugLogPath(): string | undefined {
 	try {
 		const value = Deno.env.get('SIYUAN_CONNECTOR_DEBUG_LOG');
 		return value && value.trim().length > 0 ? value.trim() : undefined;
 	} catch {
-		// No env permission in the host sandbox — stay silent.
 		return undefined;
 	}
 }
@@ -62,25 +58,32 @@ export default class SiYuanConnector extends Connector<
 > {
 	private client!: SiYuanClient;
 
-	/** Optional debug log destination. Undefined means logging is disabled. */
 	private readonly debugLogPath = readDebugLogPath();
 
-	/** Write a debug line to a file so we can see what happens inside Gety
-	 * (console is redirected to IPC and not visible in app logs).
-	 * No-op unless SIYUAN_CONNECTOR_DEBUG_LOG is set. */
+	/** Buffered debug lines; flushed in batches to avoid per-line file IO. */
+	private debugBuffer: string[] = [];
+
 	private debug(msg: string): void {
 		const path = this.debugLogPath;
 		if (!path) return;
+		this.debugBuffer.push(`${new Date().toISOString()} ${msg}\n`);
+		if (this.debugBuffer.length >= 50) this.flushDebug();
+	}
+
+	private flushDebug(): void {
+		const path = this.debugLogPath;
+		if (!path || this.debugBuffer.length === 0) return;
 		try {
-			const line = `${new Date().toISOString()} ${msg}\n`;
-			Deno.writeTextFileSync(path, line, { append: true });
+			Deno.writeTextFileSync(path, this.debugBuffer.join(''), {
+				append: true,
+			});
+			this.debugBuffer = [];
 		} catch {
 			// Best-effort; never fail the connector over logging.
 		}
 	}
 
 	override async onLoad(): Promise<void> {
-		// config is injected by the host before onLoad runs.
 		const apiUrl = (this.config.api_url ?? 'http://localhost:6806').trim();
 		const apiToken = (this.config.api_token ?? '').trim();
 		this.debug(
@@ -90,12 +93,12 @@ export default class SiYuanConnector extends Connector<
 		);
 		this.client = new SiYuanClient(apiUrl, apiToken, this.signal);
 
-		// Stage 1: connectivity check via /api/system/version (no auth needed).
 		try {
 			const ver = await this.client.version();
 			this.debug(`version() ok: ${ver}`);
 		} catch (err) {
 			this.debug(`version() FAILED: ${(err as Error).message}`);
+			this.flushDebug();
 			throw new Error(
 				`Could not reach SiYuan kernel at ${apiUrl}. ` +
 					`Ensure SiYuan is running and the API URL is correct. ` +
@@ -103,7 +106,6 @@ export default class SiYuanConnector extends Connector<
 			);
 		}
 
-		// Stage 2: auth check via lsNotebooks.
 		try {
 			const nbs = await this.client.lsNotebooks();
 			const open = nbs.filter((n) => !n.closed);
@@ -113,6 +115,7 @@ export default class SiYuanConnector extends Connector<
 			);
 		} catch (err) {
 			this.debug(`lsNotebooks() FAILED: ${(err as Error).message}`);
+			this.flushDebug();
 			throw new Error(
 				apiToken === ''
 					? `SiYuan API token is required but not provided. ` +
@@ -126,15 +129,13 @@ export default class SiYuanConnector extends Connector<
 	}
 
 	async *poll(): AsyncGenerator<PollResult, void, unknown> {
-		const pageSize = 50;
-		this.debug(`poll start. pageSize=${pageSize}`);
+		this.debug(`poll start. concurrency=${EXPORT_CONCURRENCY}`);
 
 		const notebooks = (await this.client.lsNotebooks()).filter(
 			(nb) => !nb.closed,
 		);
 		this.debug(`poll: ${notebooks.length} open notebooks`);
 
-		// Build notebook id -> name/icon lookups for metadata enrichment.
 		const notebookNames = new Map<string, string>();
 		const notebookIcons = new Map<string, string>();
 		for (const nb of notebooks) {
@@ -142,42 +143,59 @@ export default class SiYuanConnector extends Connector<
 			if (nb.icon) notebookIcons.set(nb.id, nb.icon);
 		}
 
-		// Gather the full current document set across all notebooks.
-		// SiYuan SQL is per-box, so we query each notebook and merge.
-		const liveDocs: SiyuanBlock[] = [];
+		// Phase 1: lightweight ID list for deletion detection.
+		const liveIds = new Set<string>();
 		for (const nb of notebooks) {
 			if (this.signal.aborted) return;
-			const blocks = await this.client.listDocBlocks(nb.id);
-			this.debug(
-				`poll: notebook ${nb.name} (${nb.id}) → ${blocks.length} doc blocks`,
-			);
-			liveDocs.push(...blocks);
+			const ids = await this.client.listDocIds(nb.id);
+			for (const b of ids) liveIds.add(b.id);
 		}
-		this.debug(`poll: total ${liveDocs.length} live docs across all notebooks`);
+		this.debug(`poll: ${liveIds.size} live doc IDs across all notebooks`);
 
+		// Phase 2: incremental fetch of changed documents.
 		const previousDocs = this.lastState?.knownDocs ?? {};
 		const previousIds = new Set(Object.keys(previousDocs));
+		const lastMaxUpdated = this.lastState?.lastMaxUpdated;
 
-		// Detect deleted docs: previously known, no longer in source.
-		const liveIds = new Set(liveDocs.map((d) => d.id));
-		const deletedDocIds: string[] = [];
-		for (const id of previousIds) {
-			if (!liveIds.has(id)) {
-				deletedDocIds.push(id);
+		const changedDocs: SiyuanBlock[] = [];
+		let maxUpdated = lastMaxUpdated ?? '';
+
+		for (const nb of notebooks) {
+			if (this.signal.aborted) return;
+			let blocks: SiyuanBlock[];
+			if (lastMaxUpdated) {
+				blocks = await this.client.listDocBlocksSince(nb.id, lastMaxUpdated);
+				this.debug(
+					`poll: notebook ${nb.name} incremental since ${lastMaxUpdated} → ${blocks.length} docs`,
+				);
+			} else {
+				blocks = await this.client.listDocBlocks(nb.id);
+				this.debug(
+					`poll: notebook ${nb.name} full scan → ${blocks.length} docs`,
+				);
+			}
+			for (const b of blocks) {
+				changedDocs.push(b);
+				if (b.updated && b.updated > maxUpdated) maxUpdated = b.updated;
 			}
 		}
 
-		// Emit deletes first (small batch, usually empty on steady state).
-		if (deletedDocIds.length > 0) {
-			yield {
-				updates: deletedDocIds.map((id) => del(id)),
-			};
+		// Phase 3: detect deletions.
+		const deletedDocIds: string[] = [];
+		for (const id of previousIds) {
+			if (!liveIds.has(id)) deletedDocIds.push(id);
 		}
 
-		// Determine which docs need a content refresh: new docs, or docs whose
-		// `updated` timestamp advanced since last poll.
+		if (deletedDocIds.length > 0) {
+			this.debug(`poll: ${deletedDocIds.length} docs to delete`);
+			yield { updates: deletedDocIds.map((id) => del(id)) };
+		}
+
+		// Phase 4: filter changed docs by exact updated timestamp.
+		// (listDocBlocksSince may return docs at the boundary; knownDocs
+		// comparison ensures we only re-fetch genuinely changed ones.)
 		const docsToFetch: SiyuanBlock[] = [];
-		for (const doc of liveDocs) {
+		for (const doc of changedDocs) {
 			const prevUpdated = previousDocs[doc.id];
 			if (prevUpdated === undefined || prevUpdated !== doc.updated) {
 				docsToFetch.push(doc);
@@ -188,67 +206,74 @@ export default class SiYuanConnector extends Connector<
 				`${deletedDocIds.length} to delete`,
 		);
 
-		// Rebuild the known-doc map incrementally. Start from the previous map
-		// and update with the new timestamps as we yield batches.
 		const nextDocs: Record<string, string> = { ...previousDocs };
-		// Remove deleted entries from the working map.
-		for (const id of deletedDocIds) {
-			delete nextDocs[id];
-		}
+		for (const id of deletedDocIds) delete nextDocs[id];
 
-		// Fetch content and yield in page-sized batches.
-		let batch: ReturnType<typeof upsert>[] = [];
-		for (let i = 0; i < docsToFetch.length; i++) {
+		// Dynamic batch size: scales with document count, clamped to [20, 100].
+		const pageSize = Math.min(
+			100,
+			Math.max(20, Math.ceil(Math.sqrt(Math.max(docsToFetch.length, 1)) * 3)),
+		);
+
+		// Phase 5: concurrent export + batch yield.
+		let yielded = 0;
+		for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
 			if (this.signal.aborted) return;
 
-			const doc = docsToFetch[i];
-			let markdown = '';
-			try {
-				const exported = await this.client.exportMdContent(doc.id);
-				markdown = exported.content ?? '';
-			} catch (err) {
-				// If a single doc fails (e.g. deleted mid-poll), emit a
-				// best-effort doc with whatever metadata we have and continue.
-				markdown = `<!-- export failed: ${(err as Error).message} -->`;
-			}
-
-			batch.push(
-				this.buildDocUpsert(doc, markdown, notebookNames, notebookIcons),
+			const chunk = docsToFetch.slice(i, i + EXPORT_CONCURRENCY);
+			const chunkResults = await Promise.all(
+				chunk.map(async (doc) => {
+					try {
+						const exported = await this.client.exportMdContent(doc.id);
+						return { doc, markdown: exported.content ?? '' };
+					} catch (err) {
+						return {
+							doc,
+							markdown: `<!-- export failed: ${(err as Error).message} -->`,
+						};
+					}
+				}),
 			);
 
-			if (batch.length >= pageSize || i === docsToFetch.length - 1) {
-				this.debug(`poll: yielding batch of ${batch.length} docs (i=${i})`);
-				// Advance state for the docs covered by this batch.
-				for (let j = i - batch.length + 1; j <= i; j++) {
-					const d = docsToFetch[j];
-					if (d.updated) {
-						nextDocs[d.id] = d.updated;
-					}
-				}
-				yield {
-					updates: batch,
-					state: {
-						knownDocs: nextDocs,
-						lastSyncAt: new Date().toISOString(),
-					},
-				};
-				batch = [];
+			const batch = chunkResults.map((r) =>
+				this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons),
+			);
+
+			// Advance state for docs in this chunk.
+			for (const r of chunkResults) {
+				if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
 			}
+
+			yielded += batch.length;
+			this.debug(
+				`poll: yielding batch of ${batch.length} docs (total=${yielded})`,
+			);
+			yield {
+				updates: batch,
+				state: {
+					knownDocs: nextDocs,
+					lastMaxUpdated: maxUpdated,
+					lastSyncAt: new Date().toISOString(),
+				},
+			};
 		}
 
-		// If nothing changed at all, still yield an empty state checkpoint so
-		// lastSyncAt advances.
+		// If nothing changed, yield an empty state checkpoint.
 		if (docsToFetch.length === 0 && deletedDocIds.length === 0) {
 			this.debug('poll: no changes, yielding empty state checkpoint');
 			yield {
 				updates: [],
 				state: {
 					knownDocs: nextDocs,
+					lastMaxUpdated: maxUpdated,
 					lastSyncAt: new Date().toISOString(),
 				},
 			};
 		}
+
+		this.flushDebug();
 		this.debug('poll: done');
+		this.flushDebug();
 	}
 
 	private buildDocUpsert(
@@ -261,8 +286,6 @@ export default class SiYuanConnector extends Connector<
 		const notebookName = notebookNames.get(notebookId) ?? '';
 		const notebookIcon = notebookIcons.get(notebookId);
 		const rawTitle = doc.content || doc.hpath || doc.id;
-		// Truncate the core title before suffixing the notebook name so an
-		// overlong document name can't blow out the result row layout.
 		const iconEmoji = iconCodepointToEmoji(notebookIcon);
 		const titleCore = buildDisplayTitle(
 			truncateTitle(rawTitle),
@@ -271,29 +294,36 @@ export default class SiYuanConnector extends Connector<
 		const title = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
 		const updatedAt = toRfc3339(doc.updated);
 		const createdAt = toRfc3339(doc.created);
-		// Breadcrumb keeps only the parent path: a leading segment equal to the
-		// notebook name and the trailing segment equal to the document title are
-		// both already visible in the title, so drop them.
+
 		const pathBreadcrumb = formatPathBreadcrumb(doc.hpath, {
 			dropFirst: notebookName || undefined,
 			dropLast: rawTitle,
 		});
-		// Clean: strip frontmatter, invisible chars, duplicate H1, collapse blanks.
+
+		// Extract frontmatter tags BEFORE stripFrontmatter removes them.
+		const fmTags = extractFrontmatterTags(rawMarkdown);
+
 		let content = cleanMarkdown(rawMarkdown);
 		content = stripDuplicateH1(content, rawTitle);
-		// Empty documents fall back to a neutral marker rather than echoing the
-		// title, which is already shown as the document title.
 		content = content.trim() || EMPTY_DOC_PLACEHOLDER;
-		const tags = extractTags(content);
-		// Prepend a blockquote header with path, date, word count, and tags.
+
+		// Merge frontmatter tags with inline #tags from the body.
+		const bodyTags = extractTags(content);
+		const tagSet = new Set<string>();
+		for (const t of fmTags.split(',')) if (t) tagSet.add(t);
+		for (const t of bodyTags.split(',')) if (t) tagSet.add(t);
+		const tags = Array.from(tagSet).slice(0, 20).join(',');
+
+		// Compact header: path + date only. Word count, read time, and tags
+		// live in metadata so the body dominates the search preview.
 		const header = buildContentHeader(
 			pathBreadcrumb || undefined,
 			updatedAt,
-			content,
-			tags,
+			undefined,
+			undefined,
+			true, // compact
 		);
 		const fullContent = header + content;
-		// Extract outgoing siyuan:// links for relationship metadata.
 		const links = extractLinks(fullContent);
 
 		return upsert({
@@ -303,8 +333,6 @@ export default class SiYuanConnector extends Connector<
 			content_format: 'markdown',
 			doc_type: DOC_TYPE,
 			doc_updated_at: updatedAt,
-			// Byte length, not string length: CJK characters take 3 bytes each,
-			// so `String.length` under-reports the real payload size.
 			original_file_size: new TextEncoder().encode(fullContent).length,
 			metadata: {
 				url: `siyuan://blocks/${doc.id}`,

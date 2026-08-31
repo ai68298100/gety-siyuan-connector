@@ -100,10 +100,8 @@ export class SiYuanClient {
 		return data.notebooks ?? [];
 	}
 
-	/** List document blocks for a notebook via SQL. */
+	/** List all document blocks for a notebook via SQL (full metadata). */
 	listDocBlocks(notebookId: string): Promise<SiyuanBlock[]> {
-		// type='d' filters document blocks; box filters by notebook.
-		// Order by path for stable traversal.
 		const stmt =
 			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
 			`FROM blocks WHERE type = 'd' AND box = '${
@@ -113,15 +111,36 @@ export class SiYuanClient {
 		return this.query(stmt);
 	}
 
-	/** List content blocks (non-document) for a notebook via SQL. */
-	listContentBlocks(notebookId: string): Promise<SiyuanBlock[]> {
+	/**
+	 * List document blocks updated since a SiYuan timestamp (YYYYMMDDHHmmss).
+	 * Used for incremental sync: only fetches docs whose `updated` advanced
+	 * since the last poll, avoiding a full metadata scan on steady state.
+	 */
+	listDocBlocksSince(
+		notebookId: string,
+		sinceTimestamp: string,
+	): Promise<SiyuanBlock[]> {
 		const stmt =
-			`SELECT id, content, type, subtype, hpath, path, box, updated, created, markdown ` +
-			`FROM blocks WHERE type != 'd' AND box = '${
+			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
+			`FROM blocks WHERE type = 'd' AND box = '${
 				this.escapeSql(notebookId)
 			}' ` +
-			`AND markdown != '' ` +
-			`ORDER BY path ASC, sort ASC`;
+			`AND updated > '${this.escapeSql(sinceTimestamp)}' ` +
+			`ORDER BY path ASC`;
+		return this.query(stmt);
+	}
+
+	/**
+	 * List only the IDs of all document blocks in a notebook.
+	 * Lighter than listDocBlocks (no content/path columns) — used purely for
+	 * deletion detection (IDs present in state but missing from source).
+	 */
+	listDocIds(notebookId: string): Promise<SiyuanBlock[]> {
+		const stmt =
+			`SELECT id FROM blocks WHERE type = 'd' AND box = '${
+				this.escapeSql(notebookId)
+			}' ` +
+			`ORDER BY path ASC`;
 		return this.query(stmt);
 	}
 

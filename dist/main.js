@@ -36,14 +36,27 @@ var SiYuanClient = class {
     );
     return data.notebooks ?? [];
   }
-  /** List document blocks for a notebook via SQL. */
+  /** List all document blocks for a notebook via SQL (full metadata). */
   listDocBlocks(notebookId) {
     const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
-  /** List content blocks (non-document) for a notebook via SQL. */
-  listContentBlocks(notebookId) {
-    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created, markdown FROM blocks WHERE type != 'd' AND box = '${this.escapeSql(notebookId)}' AND markdown != '' ORDER BY path ASC, sort ASC`;
+  /**
+   * List document blocks updated since a SiYuan timestamp (YYYYMMDDHHmmss).
+   * Used for incremental sync: only fetches docs whose `updated` advanced
+   * since the last poll, avoiding a full metadata scan on steady state.
+   */
+  listDocBlocksSince(notebookId, sinceTimestamp) {
+    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' AND updated > '${this.escapeSql(sinceTimestamp)}' ORDER BY path ASC`;
+    return this.query(stmt);
+  }
+  /**
+   * List only the IDs of all document blocks in a notebook.
+   * Lighter than listDocBlocks (no content/path columns) — used purely for
+   * deletion detection (IDs present in state but missing from source).
+   */
+  listDocIds(notebookId) {
+    const stmt = `SELECT id FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
   /** Run an arbitrary SQL query against the SiYuan kernel. */
@@ -115,6 +128,8 @@ var SiYuanClient = class {
 };
 
 // src/utils.ts
+var SIYUAN_ID = "(?:[0-9]{14}-[a-z0-9]+|[a-z0-9]{20,})";
+var SIYUAN_ID_RE = new RegExp(SIYUAN_ID, "i");
 function toRfc3339(ts) {
   if (!ts || ts.length !== 14) return void 0;
   const y = ts.slice(0, 4);
@@ -128,16 +143,63 @@ function toRfc3339(ts) {
   if (Number.isNaN(ms)) return void 0;
   return new Date(ms).toISOString();
 }
+var CODE_FENCE_RE = /```[\s\S]*?```/g;
+var INLINE_CODE_RE = /`[^`\n]+`/g;
+var MATH_BLOCK_RE = /\$\$[\s\S]*?\$\$/g;
+var MATH_INLINE_RE = /\$[^$\n]+\$/g;
+var PLACEHOLDER_RE = /\x00(?:FENCE|INLINE|MATHB|MATHI)\d+\x00/g;
+function protectCode(markdown) {
+  const store = [];
+  let result = markdown;
+  const stash = (re, prefix) => {
+    result = result.replace(re, (match) => {
+      const idx = store.length;
+      store.push(match);
+      return `\0${prefix}${idx}\0`;
+    });
+  };
+  stash(CODE_FENCE_RE, "FENCE");
+  stash(MATH_BLOCK_RE, "MATHB");
+  stash(INLINE_CODE_RE, "INLINE");
+  stash(MATH_INLINE_RE, "MATHI");
+  return {
+    clean: result,
+    restore: (text) => text.replace(PLACEHOLDER_RE, (token) => {
+      const idx = parseInt(token.match(/\d+/)[0], 10);
+      return store[idx] ?? token;
+    })
+  };
+}
 function extractTags(markdown) {
   if (!markdown) return "";
+  const { clean, restore: _restore } = protectCode(markdown);
   const tags = /* @__PURE__ */ new Set();
   const tagRe = /(?:^|\s)#([a-zA-Z\u4e00-\u9fa5][\w\u4e00-\u9fa5-]*)/g;
   let m;
-  while ((m = tagRe.exec(markdown)) !== null) {
+  while ((m = tagRe.exec(clean)) !== null) {
     tags.add(m[1]);
     if (tags.size >= 20) break;
   }
   return Array.from(tags).join(",");
+}
+function extractFrontmatterTags(markdown) {
+  if (!markdown) return "";
+  const fm = markdown.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return "";
+  const body = fm[1];
+  let m = body.match(/^tags:\s*\[([^\]]*)\]/m);
+  if (m) {
+    return m[1].split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean).join(",");
+  }
+  m = body.match(/^tags:\s*\n((?:\s*-\s+.+\n?)+)/m);
+  if (m) {
+    return m[1].split("\n").map((line) => line.replace(/^\s*-\s+/, "").trim().replace(/^['"]|['"]$/g, "")).filter(Boolean).join(",");
+  }
+  m = body.match(/^tags:\s*(.+)$/m);
+  if (m) {
+    return m[1].split(",").map((s) => s.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean).join(",");
+  }
+  return "";
 }
 function stripFrontmatter(markdown) {
   if (!markdown) return "";
@@ -151,75 +213,89 @@ function stripInvisibleChars(text) {
   if (!text) return "";
   return text.replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD]/g, "");
 }
-function cleanMarkdown(markdown) {
-  if (!markdown) return "";
-  let result = stripFrontmatter(markdown);
-  result = stripInvisibleChars(result);
-  result = stripInlineHtml(result);
-  result = convertBlockRefs(result);
-  result = cleanEmbedBlocks(result);
-  result = convertHighlights(result);
-  result = convertLocalImages(result);
-  result = result.replace(/\n{3,}/g, "\n\n");
-  return result.trim();
-}
-function convertBlockRefs(markdown) {
-  if (!markdown) return "";
-  return markdown.replace(
-    /\(\(([0-9]{14}-[a-z0-9]+)(?:\s+["']([^"']*)["'])?\s*\)\)/g,
-    (_, blockId, text) => {
-      const trimmed = (text ?? "").trim();
-      if (!trimmed) return `[\u2197](siyuan://blocks/${blockId})`;
-      return `\u300C${trimmed}\u300D[\u2197](siyuan://blocks/${blockId})`;
-    }
-  );
-}
 function stripInlineHtml(markdown) {
   if (!markdown) return "";
-  return markdown.replace(/<br\s*\/?>/gi, "\n").replace(/<img\b[^>]*>/gi, "").replace(/<\/?(?:div|p)\b[^>]*>/gi, "\n").replace(
-    /<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var)\b[^>]*>/gi,
+  return markdown.replace(/<br\s*\/?>/gi, "\n").replace(/<img\b[^>]*>/gi, "").replace(
+    /<\/?(?:div|p|section|article|header|footer|nav|aside|figure|figcaption|table|thead|tbody|tr|td|th|ul|ol|li|dl|dt|dd|blockquote|pre|h[1-6])\b[^>]*>/gi,
+    "\n"
+  ).replace(
+    /<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var|a|button|input|select|textarea|iframe|style|script|video|audio|source|track)\b[^>]*>/gi,
     ""
   );
 }
+function convertBlockRefs(markdown) {
+  if (!markdown) return "";
+  const re = new RegExp(
+    `\\(\\((${SIYUAN_ID})(?:\\s+["']([^"']*)["'])?\\s*\\)\\)`,
+    "gi"
+  );
+  return markdown.replace(re, (_, blockId, text) => {
+    const trimmed = (text ?? "").trim();
+    if (!trimmed) return `[\u2197](siyuan://blocks/${blockId})`;
+    return `\u300C${trimmed}\u300D[\u2197](siyuan://blocks/${blockId})`;
+  });
+}
 function cleanEmbedBlocks(markdown) {
   if (!markdown) return "";
-  return markdown.replace(
-    /\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi,
-    (_match, attrs, body) => {
-      const inner = body.trim();
-      if (inner) {
-        return inner.split("\n").map((l) => `> ${l.trim()}`).join("\n");
-      }
-      const idMatch = attrs.match(/[0-9]{14}-[a-z0-9]+/i);
-      if (idMatch) return `[\u2197](siyuan://blocks/${idMatch[0]})`;
-      return "";
+  const re = /\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi;
+  return markdown.replace(re, (_match, attrs, body) => {
+    const inner = body.trim();
+    if (inner) {
+      return inner.split("\n").map((l) => `> ${l.trim()}`).join("\n");
     }
-  );
+    const idMatch = attrs.match(new RegExp(SIYUAN_ID, "i"));
+    if (idMatch) return `[\u2197](siyuan://blocks/${idMatch[0]})`;
+    return "";
+  });
 }
 function convertHighlights(markdown) {
   if (!markdown) return "";
   return markdown.replace(/==([^\n=]+)==/g, "**$1**");
 }
-function convertLocalImages(markdown) {
+function convertLocalAssets(markdown) {
   if (!markdown) return "";
   return markdown.replace(
-    /!\[([^\]]*)\]\((?!https?:)([^)]*)\)/g,
-    (_, alt) => {
+    /!\[([^\]]*)\]\((?!https?:)([^)]+)\)/g,
+    (_, alt, url) => {
       const caption = alt.trim();
-      return caption ? `\u{1F5BC} ${caption}` : "\u{1F5BC} \u56FE\u7247";
+      const ext = (url.split(".").pop() || "").toLowerCase();
+      const name = url.split("/").pop() || url;
+      if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(ext)) {
+        return caption ? `\u{1F5BC} ${caption}` : "\u{1F5BC} \u56FE\u7247";
+      }
+      if (["mp3", "wav", "ogg", "flac", "aac", "m4a"].includes(ext)) {
+        return `\u{1F3B5} ${caption || name}`;
+      }
+      if (["mp4", "webm", "mov", "avi", "mkv", "flv"].includes(ext)) {
+        return `\u{1F3AC} ${caption || name}`;
+      }
+      return `\u{1F4CE} ${caption || name}`;
     }
   );
 }
 function extractLinks(markdown) {
   if (!markdown) return "";
   const ids = /* @__PURE__ */ new Set();
-  const linkRe = /siyuan:\/\/blocks\/([0-9]{14}-[a-z0-9]+)/g;
+  const linkRe = new RegExp(`siyuan://blocks/(${SIYUAN_ID})`, "gi");
   let m;
   while ((m = linkRe.exec(markdown)) !== null) {
     ids.add(m[1]);
     if (ids.size >= 50) break;
   }
   return Array.from(ids).join(",");
+}
+function cleanMarkdown(markdown) {
+  if (!markdown) return "";
+  const { clean, restore } = protectCode(markdown);
+  let result = stripFrontmatter(clean);
+  result = stripInvisibleChars(result);
+  result = stripInlineHtml(result);
+  result = convertBlockRefs(result);
+  result = cleanEmbedBlocks(result);
+  result = convertHighlights(result);
+  result = convertLocalAssets(result);
+  result = result.replace(/\n{3,}/g, "\n\n");
+  return restore(result.trim());
 }
 function formatRelativeDate(rfc3339) {
   if (!rfc3339) return "";
@@ -286,25 +362,29 @@ function stripDuplicateH1(markdown, title) {
   }
   return markdown;
 }
-function buildContentHeader(pathBreadcrumb, updatedAt, content, tags) {
+function buildContentHeader(pathBreadcrumb, updatedAt, content, tags, compact = false) {
   const lines = [];
   if (pathBreadcrumb) lines.push(`\u{1F4C1} ${pathBreadcrumb}`);
-  const metaParts = [];
-  if (updatedAt) metaParts.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
-  if (content) {
-    const { cjk, latin } = countWordsDetailed(content);
-    const wc = cjk + latin;
-    if (wc > 0) {
-      metaParts.push(`\u{1F4DD} ${wc.toLocaleString("en-US")} \u5B57`);
-      metaParts.push(`\u23F1 ${estimateReadTimeDetailed(cjk, latin)} \u5206\u949F`);
+  if (!compact) {
+    const metaParts = [];
+    if (updatedAt) metaParts.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
+    if (content) {
+      const { cjk, latin } = countWordsDetailed(content);
+      const wc = cjk + latin;
+      if (wc > 0) {
+        metaParts.push(`\u{1F4DD} ${wc.toLocaleString("en-US")} \u5B57`);
+        metaParts.push(`\u23F1 ${estimateReadTimeDetailed(cjk, latin)} \u5206\u949F`);
+      }
     }
-  }
-  if (metaParts.length > 0) lines.push(metaParts.join(" \xB7 "));
-  if (tags) {
-    const tagList = tags.split(",").filter(Boolean).slice(0, 10);
-    if (tagList.length > 0) {
-      lines.push("\u{1F3F7}\uFE0F " + tagList.map((t) => `#${t}`).join(" "));
+    if (metaParts.length > 0) lines.push(metaParts.join(" \xB7 "));
+    if (tags) {
+      const tagList = tags.split(",").filter(Boolean).slice(0, 10);
+      if (tagList.length > 0) {
+        lines.push("\u{1F3F7}\uFE0F " + tagList.map((t) => `#${t}`).join(" "));
+      }
     }
+  } else if (updatedAt) {
+    lines.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
   }
   if (lines.length === 0) return "";
   return `> ${lines.join("  \n> ")}
@@ -314,6 +394,7 @@ function buildContentHeader(pathBreadcrumb, updatedAt, content, tags) {
 
 // src/index.ts
 var DOC_TYPE = "siyuan:doc";
+var EXPORT_CONCURRENCY = 6;
 var EMPTY_DOC_PLACEHOLDER = "*\uFF08\u6682\u65E0\u5185\u5BB9\uFF09*";
 function readDebugLogPath() {
   try {
@@ -325,18 +406,24 @@ function readDebugLogPath() {
 }
 var SiYuanConnector = class extends Connector {
   client;
-  /** Optional debug log destination. Undefined means logging is disabled. */
   debugLogPath = readDebugLogPath();
-  /** Write a debug line to a file so we can see what happens inside Gety
-   * (console is redirected to IPC and not visible in app logs).
-   * No-op unless SIYUAN_CONNECTOR_DEBUG_LOG is set. */
+  /** Buffered debug lines; flushed in batches to avoid per-line file IO. */
+  debugBuffer = [];
   debug(msg) {
     const path = this.debugLogPath;
     if (!path) return;
+    this.debugBuffer.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
+`);
+    if (this.debugBuffer.length >= 50) this.flushDebug();
+  }
+  flushDebug() {
+    const path = this.debugLogPath;
+    if (!path || this.debugBuffer.length === 0) return;
     try {
-      const line = `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
-`;
-      Deno.writeTextFileSync(path, line, { append: true });
+      Deno.writeTextFileSync(path, this.debugBuffer.join(""), {
+        append: true
+      });
+      this.debugBuffer = [];
     } catch {
     }
   }
@@ -352,6 +439,7 @@ var SiYuanConnector = class extends Connector {
       this.debug(`version() ok: ${ver}`);
     } catch (err) {
       this.debug(`version() FAILED: ${err.message}`);
+      this.flushDebug();
       throw new Error(
         `Could not reach SiYuan kernel at ${apiUrl}. Ensure SiYuan is running and the API URL is correct. Cause: ${err.message}`
       );
@@ -364,14 +452,14 @@ var SiYuanConnector = class extends Connector {
       );
     } catch (err) {
       this.debug(`lsNotebooks() FAILED: ${err.message}`);
+      this.flushDebug();
       throw new Error(
         apiToken === "" ? `SiYuan API token is required but not provided. Get it from SiYuan: Settings > About > API token. Cause: ${err.message}` : `SiYuan API token is invalid or rejected. Regenerate it in SiYuan: Settings > About > API token. Cause: ${err.message}`
       );
     }
   }
   async *poll() {
-    const pageSize = 50;
-    this.debug(`poll start. pageSize=${pageSize}`);
+    this.debug(`poll start. concurrency=${EXPORT_CONCURRENCY}`);
     const notebooks = (await this.client.lsNotebooks()).filter(
       (nb) => !nb.closed
     );
@@ -382,32 +470,47 @@ var SiYuanConnector = class extends Connector {
       notebookNames.set(nb.id, nb.name);
       if (nb.icon) notebookIcons.set(nb.id, nb.icon);
     }
-    const liveDocs = [];
+    const liveIds = /* @__PURE__ */ new Set();
     for (const nb of notebooks) {
       if (this.signal.aborted) return;
-      const blocks = await this.client.listDocBlocks(nb.id);
-      this.debug(
-        `poll: notebook ${nb.name} (${nb.id}) \u2192 ${blocks.length} doc blocks`
-      );
-      liveDocs.push(...blocks);
+      const ids = await this.client.listDocIds(nb.id);
+      for (const b of ids) liveIds.add(b.id);
     }
-    this.debug(`poll: total ${liveDocs.length} live docs across all notebooks`);
+    this.debug(`poll: ${liveIds.size} live doc IDs across all notebooks`);
     const previousDocs = this.lastState?.knownDocs ?? {};
     const previousIds = new Set(Object.keys(previousDocs));
-    const liveIds = new Set(liveDocs.map((d) => d.id));
-    const deletedDocIds = [];
-    for (const id of previousIds) {
-      if (!liveIds.has(id)) {
-        deletedDocIds.push(id);
+    const lastMaxUpdated = this.lastState?.lastMaxUpdated;
+    const changedDocs = [];
+    let maxUpdated = lastMaxUpdated ?? "";
+    for (const nb of notebooks) {
+      if (this.signal.aborted) return;
+      let blocks;
+      if (lastMaxUpdated) {
+        blocks = await this.client.listDocBlocksSince(nb.id, lastMaxUpdated);
+        this.debug(
+          `poll: notebook ${nb.name} incremental since ${lastMaxUpdated} \u2192 ${blocks.length} docs`
+        );
+      } else {
+        blocks = await this.client.listDocBlocks(nb.id);
+        this.debug(
+          `poll: notebook ${nb.name} full scan \u2192 ${blocks.length} docs`
+        );
+      }
+      for (const b of blocks) {
+        changedDocs.push(b);
+        if (b.updated && b.updated > maxUpdated) maxUpdated = b.updated;
       }
     }
+    const deletedDocIds = [];
+    for (const id of previousIds) {
+      if (!liveIds.has(id)) deletedDocIds.push(id);
+    }
     if (deletedDocIds.length > 0) {
-      yield {
-        updates: deletedDocIds.map((id) => del(id))
-      };
+      this.debug(`poll: ${deletedDocIds.length} docs to delete`);
+      yield { updates: deletedDocIds.map((id) => del(id)) };
     }
     const docsToFetch = [];
-    for (const doc of liveDocs) {
+    for (const doc of changedDocs) {
       const prevUpdated = previousDocs[doc.id];
       if (prevUpdated === void 0 || prevUpdated !== doc.updated) {
         docsToFetch.push(doc);
@@ -417,40 +520,46 @@ var SiYuanConnector = class extends Connector {
       `poll: ${docsToFetch.length} docs to fetch (new/updated), ${deletedDocIds.length} to delete`
     );
     const nextDocs = { ...previousDocs };
-    for (const id of deletedDocIds) {
-      delete nextDocs[id];
-    }
-    let batch = [];
-    for (let i = 0; i < docsToFetch.length; i++) {
+    for (const id of deletedDocIds) delete nextDocs[id];
+    const pageSize = Math.min(
+      100,
+      Math.max(20, Math.ceil(Math.sqrt(Math.max(docsToFetch.length, 1)) * 3))
+    );
+    let yielded = 0;
+    for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
       if (this.signal.aborted) return;
-      const doc = docsToFetch[i];
-      let markdown = "";
-      try {
-        const exported = await this.client.exportMdContent(doc.id);
-        markdown = exported.content ?? "";
-      } catch (err) {
-        markdown = `<!-- export failed: ${err.message} -->`;
-      }
-      batch.push(
-        this.buildDocUpsert(doc, markdown, notebookNames, notebookIcons)
+      const chunk = docsToFetch.slice(i, i + EXPORT_CONCURRENCY);
+      const chunkResults = await Promise.all(
+        chunk.map(async (doc) => {
+          try {
+            const exported = await this.client.exportMdContent(doc.id);
+            return { doc, markdown: exported.content ?? "" };
+          } catch (err) {
+            return {
+              doc,
+              markdown: `<!-- export failed: ${err.message} -->`
+            };
+          }
+        })
       );
-      if (batch.length >= pageSize || i === docsToFetch.length - 1) {
-        this.debug(`poll: yielding batch of ${batch.length} docs (i=${i})`);
-        for (let j = i - batch.length + 1; j <= i; j++) {
-          const d = docsToFetch[j];
-          if (d.updated) {
-            nextDocs[d.id] = d.updated;
-          }
-        }
-        yield {
-          updates: batch,
-          state: {
-            knownDocs: nextDocs,
-            lastSyncAt: (/* @__PURE__ */ new Date()).toISOString()
-          }
-        };
-        batch = [];
+      const batch = chunkResults.map(
+        (r) => this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons)
+      );
+      for (const r of chunkResults) {
+        if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
       }
+      yielded += batch.length;
+      this.debug(
+        `poll: yielding batch of ${batch.length} docs (total=${yielded})`
+      );
+      yield {
+        updates: batch,
+        state: {
+          knownDocs: nextDocs,
+          lastMaxUpdated: maxUpdated,
+          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString()
+        }
+      };
     }
     if (docsToFetch.length === 0 && deletedDocIds.length === 0) {
       this.debug("poll: no changes, yielding empty state checkpoint");
@@ -458,11 +567,14 @@ var SiYuanConnector = class extends Connector {
         updates: [],
         state: {
           knownDocs: nextDocs,
+          lastMaxUpdated: maxUpdated,
           lastSyncAt: (/* @__PURE__ */ new Date()).toISOString()
         }
       };
     }
+    this.flushDebug();
     this.debug("poll: done");
+    this.flushDebug();
   }
   buildDocUpsert(doc, rawMarkdown, notebookNames, notebookIcons) {
     const notebookId = doc.box ?? "";
@@ -481,15 +593,22 @@ var SiYuanConnector = class extends Connector {
       dropFirst: notebookName || void 0,
       dropLast: rawTitle
     });
+    const fmTags = extractFrontmatterTags(rawMarkdown);
     let content = cleanMarkdown(rawMarkdown);
     content = stripDuplicateH1(content, rawTitle);
     content = content.trim() || EMPTY_DOC_PLACEHOLDER;
-    const tags = extractTags(content);
+    const bodyTags = extractTags(content);
+    const tagSet = /* @__PURE__ */ new Set();
+    for (const t of fmTags.split(",")) if (t) tagSet.add(t);
+    for (const t of bodyTags.split(",")) if (t) tagSet.add(t);
+    const tags = Array.from(tagSet).slice(0, 20).join(",");
     const header = buildContentHeader(
       pathBreadcrumb || void 0,
       updatedAt,
-      content,
-      tags
+      void 0,
+      void 0,
+      true
+      // compact
     );
     const fullContent = header + content;
     const links = extractLinks(fullContent);
@@ -500,8 +619,6 @@ var SiYuanConnector = class extends Connector {
       content_format: "markdown",
       doc_type: DOC_TYPE,
       doc_updated_at: updatedAt,
-      // Byte length, not string length: CJK characters take 3 bytes each,
-      // so `String.length` under-reports the real payload size.
       original_file_size: new TextEncoder().encode(fullContent).length,
       metadata: {
         url: `siyuan://blocks/${doc.id}`,
