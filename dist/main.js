@@ -129,7 +129,6 @@ var SiYuanClient = class {
 
 // src/utils.ts
 var SIYUAN_ID = "(?:[0-9]{14}-[a-z0-9]+|[a-z0-9]{20,})";
-var SIYUAN_ID_RE = new RegExp(SIYUAN_ID, "i");
 function toRfc3339(ts) {
   if (!ts || ts.length !== 14) return void 0;
   const y = ts.slice(0, 4);
@@ -193,7 +192,9 @@ function extractFrontmatterTags(markdown) {
   }
   m = body.match(/^tags:\s*\n((?:\s*-\s+.+\n?)+)/m);
   if (m) {
-    return m[1].split("\n").map((line) => line.replace(/^\s*-\s+/, "").trim().replace(/^['"]|['"]$/g, "")).filter(Boolean).join(",");
+    return m[1].split("\n").map(
+      (line) => line.replace(/^\s*-\s+/, "").trim().replace(/^['"]|['"]$/g, "")
+    ).filter(Boolean).join(",");
   }
   m = body.match(/^tags:\s*(.+)$/m);
   if (m) {
@@ -229,11 +230,14 @@ function convertBlockRefs(markdown) {
     `\\(\\((${SIYUAN_ID})(?:\\s+["']([^"']*)["'])?\\s*\\)\\)`,
     "gi"
   );
-  return markdown.replace(re, (_, blockId, text) => {
-    const trimmed = (text ?? "").trim();
-    if (!trimmed) return `[\u2197](siyuan://blocks/${blockId})`;
-    return `\u300C${trimmed}\u300D[\u2197](siyuan://blocks/${blockId})`;
-  });
+  return markdown.replace(
+    re,
+    (_, blockId, text) => {
+      const trimmed = (text ?? "").trim();
+      if (!trimmed) return `[\u2197](siyuan://blocks/${blockId})`;
+      return `\u300C${trimmed}\u300D[\u2197](siyuan://blocks/${blockId})`;
+    }
+  );
 }
 function cleanEmbedBlocks(markdown) {
   if (!markdown) return "";
@@ -521,10 +525,6 @@ var SiYuanConnector = class extends Connector {
     );
     const nextDocs = { ...previousDocs };
     for (const id of deletedDocIds) delete nextDocs[id];
-    const pageSize = Math.min(
-      100,
-      Math.max(20, Math.ceil(Math.sqrt(Math.max(docsToFetch.length, 1)) * 3))
-    );
     let yielded = 0;
     for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
       if (this.signal.aborted) return;

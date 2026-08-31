@@ -11,7 +11,6 @@
  * IDs. Both shapes must be matched wherever block references appear.
  */
 const SIYUAN_ID = '(?:[0-9]{14}-[a-z0-9]+|[a-z0-9]{20,})';
-const SIYUAN_ID_RE = new RegExp(SIYUAN_ID, 'i');
 
 /**
  * Convert a SiYuan "YYYYMMDDHHmmss" local-time timestamp to RFC 3339 UTC.
@@ -44,6 +43,8 @@ const CODE_FENCE_RE = /```[\s\S]*?```/g;
 const INLINE_CODE_RE = /`[^`\n]+`/g;
 const MATH_BLOCK_RE = /\$\$[\s\S]*?\$\$/g;
 const MATH_INLINE_RE = /\$[^$\n]+\$/g;
+// NUL delimiters are intentional placeholders for protected code/math spans.
+// deno-lint-ignore no-control-regex
 const PLACEHOLDER_RE = /\x00(?:FENCE|INLINE|MATHB|MATHI)\d+\x00/g;
 
 interface ProtectedState {
@@ -138,7 +139,9 @@ export function extractFrontmatterTags(markdown: string): string {
 	if (m) {
 		return m[1]
 			.split('\n')
-			.map((line) => line.replace(/^\s*-\s+/, '').trim().replace(/^['"]|['"]$/g, ''))
+			.map((line) =>
+				line.replace(/^\s*-\s+/, '').trim().replace(/^['"]|['"]$/g, '')
+			)
 			.filter(Boolean)
 			.join(',');
 	}
@@ -215,11 +218,14 @@ export function convertBlockRefs(markdown: string): string {
 		`\\(\\((${SIYUAN_ID})(?:\\s+["']([^"']*)["'])?\\s*\\)\\)`,
 		'gi',
 	);
-	return markdown.replace(re, (_, blockId: string, text: string | undefined) => {
-		const trimmed = (text ?? '').trim();
-		if (!trimmed) return `[↗](siyuan://blocks/${blockId})`;
-		return `「${trimmed}」[↗](siyuan://blocks/${blockId})`;
-	});
+	return markdown.replace(
+		re,
+		(_, blockId: string, text: string | undefined) => {
+			const trimmed = (text ?? '').trim();
+			if (!trimmed) return `[↗](siyuan://blocks/${blockId})`;
+			return `「${trimmed}」[↗](siyuan://blocks/${blockId})`;
+		},
+	);
 }
 
 /**
@@ -272,7 +278,9 @@ export function convertLocalAssets(markdown: string): string {
 			const caption = alt.trim();
 			const ext = (url.split('.').pop() || '').toLowerCase();
 			const name = url.split('/').pop() || url;
-			if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)) {
+			if (
+				['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)
+			) {
 				return caption ? `🖼 ${caption}` : '🖼 图片';
 			}
 			if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) {
@@ -359,7 +367,9 @@ export function formatRelativeDate(rfc3339: string | undefined): string {
 /**
  * Count CJK characters and Latin words separately.
  */
-export function countWordsDetailed(text: string): { cjk: number; latin: number } {
+export function countWordsDetailed(
+	text: string,
+): { cjk: number; latin: number } {
 	if (!text) return { cjk: 0, latin: 0 };
 	const cjk =
 		(text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g) ?? []).length;

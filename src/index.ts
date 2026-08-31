@@ -209,12 +209,6 @@ export default class SiYuanConnector extends Connector<
 		const nextDocs: Record<string, string> = { ...previousDocs };
 		for (const id of deletedDocIds) delete nextDocs[id];
 
-		// Dynamic batch size: scales with document count, clamped to [20, 100].
-		const pageSize = Math.min(
-			100,
-			Math.max(20, Math.ceil(Math.sqrt(Math.max(docsToFetch.length, 1)) * 3)),
-		);
-
 		// Phase 5: concurrent export + batch yield.
 		let yielded = 0;
 		for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
@@ -236,7 +230,7 @@ export default class SiYuanConnector extends Connector<
 			);
 
 			const batch = chunkResults.map((r) =>
-				this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons),
+				this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons)
 			);
 
 			// Advance state for docs in this chunk.

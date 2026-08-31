@@ -9,8 +9,8 @@ All notable changes to this project are documented in this file.
 - **Concurrent Markdown export** — up to 6 `exportMdContent` requests run in
   parallel during a poll, cutting first-time index time by roughly 3-5x
 - **Incremental SQL query** (`listDocBlocksSince`) — steady-state polls fetch
-  only documents whose `updated` timestamp advanced since the last sync,
-  instead of scanning every notebook
+  only documents whose `updated` timestamp advanced since the last sync, instead
+  of scanning every notebook
 - **Lightweight ID query** (`listDocIds`) — deletion detection now pulls only
   document IDs, avoiding a full metadata scan
 - **Frontmatter tag extraction** — tags declared in the YAML frontmatter
@@ -20,10 +20,9 @@ All notable changes to this project are documented in this file.
   shielded from all regex transforms so `==`, `(( ))`, HTML tags, and blank
   lines inside code are preserved verbatim
 - **Unified block-ID pattern** — block references and links now match both
-  legacy `YYYYMMDDHHmmss-hash` IDs and newer 20+ character pure-alphanumeric
-  IDs
-- **Local asset classification** — workspace files are marked by type:
-  images 🖼, audio 🎵, video 🎬, other attachments 📎
+  legacy `YYYYMMDDHHmmss-hash` IDs and newer 20+ character pure-alphanumeric IDs
+- **Local asset classification** — workspace files are marked by type: images 🖼,
+  audio 🎵, video 🎬, other attachments 📎
 - **Compact content header** — the blockquote header now shows only path and
   date by default, leaving more preview room for the document body
 - **Buffered debug logging** — log lines accumulate in memory and flush in
@@ -35,8 +34,8 @@ All notable changes to this project are documented in this file.
   `**`, `((id))` was rewritten, HTML tags stripped, blank lines collapsed
 - **Frontmatter tags were silently dropped** — `stripFrontmatter` removed the
   YAML block before tags could be read
-- **`extractTags` matched code comments** — `#include`, Python `# comment`,
-  and shell comments were indexed as tags
+- **`extractTags` matched code comments** — `#include`, Python `# comment`, and
+  shell comments were indexed as tags
 - **Block references with new-style IDs were left as raw markup**
 
 ### Changed
@@ -49,14 +48,14 @@ All notable changes to this project are documented in this file.
 ### Removed
 
 - Dead code: `buildBlockTitle`, `blockTypeEmoji`, `extractParentDocId`,
-  `clampPositiveNumber`, `parseExcludeNotebooks`, `listContentBlocks`
-  (leftovers from the removed block-level indexing mode)
+  `clampPositiveNumber`, `parseExcludeNotebooks`, `listContentBlocks` (leftovers
+  from the removed block-level indexing mode)
 
 ### Tests
 
-- Expanded from 37 to 56 unit tests, covering code-block protection,
-  frontmatter tags, new ID formats, asset classification, compact headers,
-  and end-to-end pipeline cleanliness
+- Expanded from 37 to 56 unit tests, covering code-block protection, frontmatter
+  tags, new ID formats, asset classification, compact headers, and end-to-end
+  pipeline cleanliness
 
 ## [0.3.3] - 2026-08-31
 

@@ -99,7 +99,8 @@ Deno.test('cleanMarkdown preserves blank lines inside code blocks', () => {
 // ─── Tags ───────────────────────────────────────────────────────────────────
 
 Deno.test('extractTags pulls ASCII and CJK tags from markdown', () => {
-	const md = 'This doc covers #investing and #尽职调查.\n\nRelated: #fund #大健康';
+	const md =
+		'This doc covers #investing and #尽职调查.\n\nRelated: #fund #大健康';
 	const tags = extractTags(md);
 	const set = new Set(tags.split(','));
 	assert.equal(set.has('investing'), true);
@@ -109,7 +110,8 @@ Deno.test('extractTags pulls ASCII and CJK tags from markdown', () => {
 });
 
 Deno.test('extractTags ignores tags inside code blocks', () => {
-	const md = '正文 #real_tag\n```python\n# this is a comment\n#include <stdio.h>\n```';
+	const md =
+		'正文 #real_tag\n```python\n# this is a comment\n#include <stdio.h>\n```';
 	const tags = extractTags(md);
 	const set = new Set(tags.split(','));
 	assert.equal(set.has('real_tag'), true);
@@ -323,7 +325,10 @@ Deno.test('countWords counts CJK and Latin separately', () => {
 });
 
 Deno.test('countWordsDetailed splits CJK and Latin counts', () => {
-	assert.deepEqual(countWordsDetailed('你好 hello world'), { cjk: 2, latin: 2 });
+	assert.deepEqual(countWordsDetailed('你好 hello world'), {
+		cjk: 2,
+		latin: 2,
+	});
 	assert.deepEqual(countWordsDetailed(''), { cjk: 0, latin: 0 });
 });
 
@@ -421,7 +426,10 @@ Deno.test('buildContentHeader compact mode omits word count and tags', () => {
 });
 
 Deno.test('buildContentHeader returns empty for no input', () => {
-	assert.equal(buildContentHeader(undefined, undefined, undefined, undefined), '');
+	assert.equal(
+		buildContentHeader(undefined, undefined, undefined, undefined),
+		'',
+	);
 });
 
 // ─── End-to-end pipeline ────────────────────────────────────────────────────
