@@ -44,7 +44,7 @@ export function extractTags(markdown: string): string {
 
 /**
  * SiYuan internal path looks like
- * "/20260823120000-abc123/20260823130000-def456".
+ * "/20260101000008-hhhhhhh/20260823130000-def456".
  * The last segment's ID is the document ID for that path. Returns undefined
  * for the root or malformed paths.
  */
@@ -138,6 +138,8 @@ export function cleanMarkdown(markdown: string): string {
 	result = stripInlineHtml(result);
 	result = convertBlockRefs(result);
 	result = cleanEmbedBlocks(result);
+	result = convertHighlights(result);
+	result = convertLocalImages(result);
 	// Collapse 3+ consecutive newlines into 2 (one blank line).
 	result = result.replace(/\n{3,}/g, '\n\n');
 	return result.trim();
@@ -151,18 +153,21 @@ export function cleanMarkdown(markdown: string): string {
  * sentence flow naturally without breaking the paragraph structure.
  *
  * Examples:
- *   ((20260307230420-xyno4aj "引用文本"))
- * →   「引用文本」[↗](siyuan://blocks/20260307230420-xyno4aj)
+ *   ((20260101000001-aaaaaaa "引用文本"))
+ * →   「引用文本」[↗](siyuan://blocks/20260101000001-aaaaaaa)
  *
  *   上会项目：((id1 "公司A"))、((id2 "公司B"))
  * →  上会项目：「公司A」[↗](siyuan://blocks/id1)、「公司B」[↗](siyuan://blocks/id2)
  */
 export function convertBlockRefs(markdown: string): string {
 	if (!markdown) return '';
+	// The quoted text is optional: SiYuan also emits bare `((block-id))`
+	// references when the source block has no text anchor. Leaving those
+	// untouched would print raw IDs in the preview.
 	return markdown.replace(
-		/\(\(([0-9]{14}-[a-z0-9]+)\s+["']([^"']*)["']\)\)/g,
-		(_, blockId: string, text: string) => {
-			const trimmed = text.trim();
+		/\(\(([0-9]{14}-[a-z0-9]+)(?:\s+["']([^"']*)["'])?\s*\)\)/g,
+		(_, blockId: string, text: string | undefined) => {
+			const trimmed = (text ?? '').trim();
 			if (!trimmed) return `[↗](siyuan://blocks/${blockId})`;
 			return `「${trimmed}」[↗](siyuan://blocks/${blockId})`;
 		},
@@ -176,8 +181,20 @@ export function convertBlockRefs(markdown: string): string {
  */
 export function stripInlineHtml(markdown: string): string {
 	if (!markdown) return '';
-	// Remove opening/closing tags but keep inner content.
-	return markdown.replace(/<\/?span[^>]*>/gi, '');
+	return markdown
+		// Line breaks become real newlines so text does not run together.
+		.replace(/<br\s*\/?>/gi, '\n')
+		// Images are workspace-local and unreachable from the index; drop the
+		// tag here so no raw <img> markup leaks into the preview.
+		.replace(/<img\b[^>]*>/gi, '')
+		// Block-level wrappers: drop the tags, keep the content, and add a line
+		// break so adjacent paragraphs do not merge.
+		.replace(/<\/?(?:div|p)\b[^>]*>/gi, '\n')
+		// Inline wrappers: drop the tags, keep the inner text.
+		.replace(
+			/<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var)\b[^>]*>/gi,
+			'',
+		);
 }
 
 /**
@@ -194,11 +211,58 @@ export function stripInlineHtml(markdown: string): string {
  */
 export function cleanEmbedBlocks(markdown: string): string {
 	if (!markdown) return '';
+	// Covers all the shapes SiYuan emits:
+	//   {{{row\n内容\n}}}                  plain row embed with content
+	//   {{{col\n内容\n}}}                  column layout embed
+	//   {{{row id="2026...-abc123"\n\n}}}  reference embed, no inlined content
 	return markdown.replace(
-		/\{\{\{row?\r?\n([\s\S]*?)\r?\n\}\}\}/g,
-		(_, content: string) => {
-			const lines = content.trim().split('\n').map((l) => `> ${l}`);
-			return lines.join('\n');
+		/\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi,
+		(_match, attrs: string, body: string) => {
+			const inner = body.trim();
+			if (inner) {
+				// Embedded content is quoted from another location.
+				return inner
+					.split('\n')
+					.map((l) => `> ${l.trim()}`)
+					.join('\n');
+			}
+			// Empty embed: it is really a reference to another block. Recover
+			// the id when present so the link survives; otherwise drop the
+			// markers so they don't show up as noise.
+			const idMatch = attrs.match(/[0-9]{14}-[a-z0-9]+/i);
+			if (idMatch) return `[↗](siyuan://blocks/${idMatch[0]})`;
+			return '';
+		},
+	);
+}
+
+/**
+ * Convert SiYuan highlight syntax `==text==` to bold `**text**`.
+ *
+ * Standard Markdown has no highlight syntax, so `==` markers would render
+ * literally. Bold is the closest available emphasis that preserves the
+ * author's intent that the text stands out.
+ */
+export function convertHighlights(markdown: string): string {
+	if (!markdown) return '';
+	// Requires non-`=` content so setext headings (`===`) are not touched.
+	return markdown.replace(/==([^\n=]+)==/g, '**$1**');
+}
+
+/**
+ * Replace images that point at workspace-local assets with a text marker.
+ *
+ * SiYuan stores images under `assets/` inside its workspace. Those paths are
+ * not reachable from the search index, so keeping the Markdown image would
+ * render as a broken image. Remote images (http/https) are left intact.
+ */
+export function convertLocalImages(markdown: string): string {
+	if (!markdown) return '';
+	return markdown.replace(
+		/!\[([^\]]*)\]\((?!https?:)([^)]*)\)/g,
+		(_, alt: string) => {
+			const caption = alt.trim();
+			return caption ? `🖼 ${caption}` : '🖼 图片';
 		},
 	);
 }
@@ -278,11 +342,46 @@ export function countWords(text: string): number {
 }
 
 /**
+ * Count CJK characters and Latin words separately. Useful for reading-time
+ * estimates, where the two scripts are read at very different speeds.
+ */
+export function countWordsDetailed(text: string): {
+	cjk: number;
+	latin: number;
+} {
+	if (!text) return { cjk: 0, latin: 0 };
+	const cjk =
+		(text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g) ?? []).length;
+	const latin = (text.match(/[a-zA-Z0-9]+/g) ?? []).length;
+	return { cjk, latin };
+}
+
+/**
  * Estimate reading time in minutes. Assumes ~400 CJK chars or ~200 English
  * words per minute. Returns at least 1.
  */
 export function estimateReadTime(wordCount: number): number {
 	return Math.max(1, Math.ceil(wordCount / 400));
+}
+
+/**
+ * Estimate reading time for mixed CJK/Latin content, scoring each script at
+ * its own pace (~400 CJK chars/min, ~200 Latin words/min). This avoids
+ * under-reporting English-heavy documents. Returns at least 1.
+ */
+export function estimateReadTimeDetailed(cjk: number, latin: number): number {
+	const minutes = cjk / 400 + latin / 200;
+	return Math.max(1, Math.ceil(minutes));
+}
+
+/**
+ * Truncate an overlong document title so it cannot blow out the layout of a
+ * search result row. Uses a single ellipsis character to save width.
+ */
+export function truncateTitle(title: string, maxLength = 60): string {
+	const text = (title ?? '').trim();
+	if (text.length <= maxLength) return text;
+	return text.slice(0, Math.max(1, maxLength - 1)) + '…';
 }
 
 /**
@@ -301,9 +400,29 @@ export function buildDisplayTitle(
  * Convert a SiYuan hPath (e.g. "/示例文档" or "/项目A/子目录/文档名")
  * into a readable breadcrumb string. Returns the path without leading slash.
  */
-export function formatPathBreadcrumb(hpath: string | undefined): string {
+export function formatPathBreadcrumb(
+	hpath: string | undefined,
+	opts?: { dropFirst?: string; dropLast?: string },
+): string {
 	if (!hpath) return '';
-	const segments = hpath.split('/').filter(Boolean);
+	let segments = hpath.split('/').filter(Boolean);
+
+	// SiYuan's hpath may or may not start with the notebook name depending on
+	// the endpoint. The notebook is already shown in the title, so drop that
+	// segment when it matches to avoid printing it twice.
+	if (
+		opts?.dropFirst && segments.length > 1 &&
+		segments[0] === opts.dropFirst
+	) {
+		segments = segments.slice(1);
+	}
+	// The last segment is the document itself, already shown as the title.
+	if (
+		opts?.dropLast && segments.length > 1 &&
+		segments[segments.length - 1] === opts.dropLast
+	) {
+		segments = segments.slice(0, -1);
+	}
 	return segments.join(' / ');
 }
 
@@ -344,37 +463,38 @@ export function stripDuplicateH1(markdown: string, title: string): string {
 }
 
 /**
- * Build a Markdown blockquote header for the content, showing notebook icon,
- * notebook name, path breadcrumb, relative date, word count, read time, and
- * tags. Renders as a visually distinct info bar at the top of search preview.
+ * Build a Markdown blockquote header rendered above the document body.
+ *
+ * The title already carries "<notebook icon> <doc title> · <notebook>", so
+ * this header deliberately omits the notebook name and icon — repeating them
+ * here made every search result show the same context twice. It shows only
+ * the parent path (when the document is nested), freshness/volume metadata,
+ * and tags.
  *
  * Example output:
- *   > 📔 笔记 · 示例文档
+ *   > 📁 子目录
  *   > 📅 3天前 · 📝 1,234 字 · ⏱ 3 分钟
  *   > 🏷️ #日记 #反思
  */
 export function buildContentHeader(
-	notebookName: string | undefined,
-	notebookIcon: string | undefined,
 	pathBreadcrumb: string | undefined,
 	updatedAt: string | undefined,
 	content?: string,
 	tags?: string,
 ): string {
 	const lines: string[] = [];
-	const icon = iconCodepointToEmoji(notebookIcon);
-	const nbLabel = [icon, notebookName].filter(Boolean).join(' ');
-	const pathPart = pathBreadcrumb || '';
-	const location = [nbLabel, pathPart].filter(Boolean).join(' · ');
-	if (location) lines.push(location);
+	if (pathBreadcrumb) lines.push(`📁 ${pathBreadcrumb}`);
 
 	const metaParts: string[] = [];
 	if (updatedAt) metaParts.push(`📅 ${formatRelativeDate(updatedAt)}`);
 	if (content) {
-		const wc = countWords(content);
+		const { cjk, latin } = countWordsDetailed(content);
+		const wc = cjk + latin;
 		if (wc > 0) {
-			metaParts.push(`📝 ${wc.toLocaleString()} 字`);
-			metaParts.push(`⏱ ${estimateReadTime(wc)} 分钟`);
+			// Fixed locale keeps the thousands separator deterministic
+			// regardless of the runtime's regional settings.
+			metaParts.push(`📝 ${wc.toLocaleString('en-US')} 字`);
+			metaParts.push(`⏱ ${estimateReadTimeDetailed(cjk, latin)} 分钟`);
 		}
 	}
 	if (metaParts.length > 0) lines.push(metaParts.join(' · '));

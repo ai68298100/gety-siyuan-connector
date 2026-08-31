@@ -158,15 +158,17 @@ function cleanMarkdown(markdown) {
   result = stripInlineHtml(result);
   result = convertBlockRefs(result);
   result = cleanEmbedBlocks(result);
+  result = convertHighlights(result);
+  result = convertLocalImages(result);
   result = result.replace(/\n{3,}/g, "\n\n");
   return result.trim();
 }
 function convertBlockRefs(markdown) {
   if (!markdown) return "";
   return markdown.replace(
-    /\(\(([0-9]{14}-[a-z0-9]+)\s+["']([^"']*)["']\)\)/g,
+    /\(\(([0-9]{14}-[a-z0-9]+)(?:\s+["']([^"']*)["'])?\s*\)\)/g,
     (_, blockId, text) => {
-      const trimmed = text.trim();
+      const trimmed = (text ?? "").trim();
       if (!trimmed) return `[\u2197](siyuan://blocks/${blockId})`;
       return `\u300C${trimmed}\u300D[\u2197](siyuan://blocks/${blockId})`;
     }
@@ -174,15 +176,37 @@ function convertBlockRefs(markdown) {
 }
 function stripInlineHtml(markdown) {
   if (!markdown) return "";
-  return markdown.replace(/<\/?span[^>]*>/gi, "");
+  return markdown.replace(/<br\s*\/?>/gi, "\n").replace(/<img\b[^>]*>/gi, "").replace(/<\/?(?:div|p)\b[^>]*>/gi, "\n").replace(
+    /<\/?(?:span|font|em|strong|b|i|u|s|del|ins|mark|sub|sup|small|big|label|code|abbr|kbd|samp|var)\b[^>]*>/gi,
+    ""
+  );
 }
 function cleanEmbedBlocks(markdown) {
   if (!markdown) return "";
   return markdown.replace(
-    /\{\{\{row?\r?\n([\s\S]*?)\r?\n\}\}\}/g,
-    (_, content) => {
-      const lines = content.trim().split("\n").map((l) => `> ${l}`);
-      return lines.join("\n");
+    /\{\{\{\s*(?:row|col)\b([^\n]*)\r?\n?([\s\S]*?)\r?\n?\}\}\}/gi,
+    (_match, attrs, body) => {
+      const inner = body.trim();
+      if (inner) {
+        return inner.split("\n").map((l) => `> ${l.trim()}`).join("\n");
+      }
+      const idMatch = attrs.match(/[0-9]{14}-[a-z0-9]+/i);
+      if (idMatch) return `[\u2197](siyuan://blocks/${idMatch[0]})`;
+      return "";
+    }
+  );
+}
+function convertHighlights(markdown) {
+  if (!markdown) return "";
+  return markdown.replace(/==([^\n=]+)==/g, "**$1**");
+}
+function convertLocalImages(markdown) {
+  if (!markdown) return "";
+  return markdown.replace(
+    /!\[([^\]]*)\]\((?!https?:)([^)]*)\)/g,
+    (_, alt) => {
+      const caption = alt.trim();
+      return caption ? `\u{1F5BC} ${caption}` : "\u{1F5BC} \u56FE\u7247";
     }
   );
 }
@@ -211,22 +235,34 @@ function formatRelativeDate(rfc3339) {
   if (diffDay < 7) return `${diffDay}\u5929\u524D`;
   return rfc3339.slice(0, 10);
 }
-function countWords(text) {
-  if (!text) return 0;
+function countWordsDetailed(text) {
+  if (!text) return { cjk: 0, latin: 0 };
   const cjk = (text.match(/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]/g) ?? []).length;
   const latin = (text.match(/[a-zA-Z0-9]+/g) ?? []).length;
-  return cjk + latin;
+  return { cjk, latin };
 }
-function estimateReadTime(wordCount) {
-  return Math.max(1, Math.ceil(wordCount / 400));
+function estimateReadTimeDetailed(cjk, latin) {
+  const minutes = cjk / 400 + latin / 200;
+  return Math.max(1, Math.ceil(minutes));
+}
+function truncateTitle(title, maxLength = 60) {
+  const text = (title ?? "").trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(0, Math.max(1, maxLength - 1)) + "\u2026";
 }
 function buildDisplayTitle(docTitle, notebookName) {
   if (!notebookName) return docTitle;
   return `${docTitle} \xB7 ${notebookName}`;
 }
-function formatPathBreadcrumb(hpath) {
+function formatPathBreadcrumb(hpath, opts) {
   if (!hpath) return "";
-  const segments = hpath.split("/").filter(Boolean);
+  let segments = hpath.split("/").filter(Boolean);
+  if (opts?.dropFirst && segments.length > 1 && segments[0] === opts.dropFirst) {
+    segments = segments.slice(1);
+  }
+  if (opts?.dropLast && segments.length > 1 && segments[segments.length - 1] === opts.dropLast) {
+    segments = segments.slice(0, -1);
+  }
   return segments.join(" / ");
 }
 function iconCodepointToEmoji(icon) {
@@ -250,20 +286,17 @@ function stripDuplicateH1(markdown, title) {
   }
   return markdown;
 }
-function buildContentHeader(notebookName, notebookIcon, pathBreadcrumb, updatedAt, content, tags) {
+function buildContentHeader(pathBreadcrumb, updatedAt, content, tags) {
   const lines = [];
-  const icon = iconCodepointToEmoji(notebookIcon);
-  const nbLabel = [icon, notebookName].filter(Boolean).join(" ");
-  const pathPart = pathBreadcrumb || "";
-  const location = [nbLabel, pathPart].filter(Boolean).join(" \xB7 ");
-  if (location) lines.push(location);
+  if (pathBreadcrumb) lines.push(`\u{1F4C1} ${pathBreadcrumb}`);
   const metaParts = [];
   if (updatedAt) metaParts.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
   if (content) {
-    const wc = countWords(content);
+    const { cjk, latin } = countWordsDetailed(content);
+    const wc = cjk + latin;
     if (wc > 0) {
-      metaParts.push(`\u{1F4DD} ${wc.toLocaleString()} \u5B57`);
-      metaParts.push(`\u23F1 ${estimateReadTime(wc)} \u5206\u949F`);
+      metaParts.push(`\u{1F4DD} ${wc.toLocaleString("en-US")} \u5B57`);
+      metaParts.push(`\u23F1 ${estimateReadTimeDetailed(cjk, latin)} \u5206\u949F`);
     }
   }
   if (metaParts.length > 0) lines.push(metaParts.join(" \xB7 "));
@@ -281,19 +314,29 @@ function buildContentHeader(notebookName, notebookIcon, pathBreadcrumb, updatedA
 
 // src/index.ts
 var DOC_TYPE = "siyuan:doc";
+var EMPTY_DOC_PLACEHOLDER = "*\uFF08\u6682\u65E0\u5185\u5BB9\uFF09*";
+function readDebugLogPath() {
+  try {
+    const value = Deno.env.get("SIYUAN_CONNECTOR_DEBUG_LOG");
+    return value && value.trim().length > 0 ? value.trim() : void 0;
+  } catch {
+    return void 0;
+  }
+}
 var SiYuanConnector = class extends Connector {
   client;
+  /** Optional debug log destination. Undefined means logging is disabled. */
+  debugLogPath = readDebugLogPath();
   /** Write a debug line to a file so we can see what happens inside Gety
-   * (console is redirected to IPC and not visible in app logs). */
+   * (console is redirected to IPC and not visible in app logs).
+   * No-op unless SIYUAN_CONNECTOR_DEBUG_LOG is set. */
   debug(msg) {
+    const path = this.debugLogPath;
+    if (!path) return;
     try {
       const line = `${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
 `;
-      Deno.writeTextFileSync(
-        "C:\\Users\\Admin\\siyuan-connector-debug.log",
-        line,
-        { append: true }
-      );
+      Deno.writeTextFileSync(path, line, { append: true });
     } catch {
     }
   }
@@ -427,18 +470,22 @@ var SiYuanConnector = class extends Connector {
     const notebookIcon = notebookIcons.get(notebookId);
     const rawTitle = doc.content || doc.hpath || doc.id;
     const iconEmoji = iconCodepointToEmoji(notebookIcon);
-    const titleWithNb = buildDisplayTitle(rawTitle, notebookName || void 0);
-    const title = iconEmoji ? `${iconEmoji} ${titleWithNb}` : titleWithNb;
+    const titleCore = buildDisplayTitle(
+      truncateTitle(rawTitle),
+      notebookName || void 0
+    );
+    const title = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
     const updatedAt = toRfc3339(doc.updated);
     const createdAt = toRfc3339(doc.created);
-    const pathBreadcrumb = formatPathBreadcrumb(doc.hpath);
+    const pathBreadcrumb = formatPathBreadcrumb(doc.hpath, {
+      dropFirst: notebookName || void 0,
+      dropLast: rawTitle
+    });
     let content = cleanMarkdown(rawMarkdown);
     content = stripDuplicateH1(content, rawTitle);
-    content = content.trim() || rawTitle;
+    content = content.trim() || EMPTY_DOC_PLACEHOLDER;
     const tags = extractTags(content);
     const header = buildContentHeader(
-      notebookName || void 0,
-      notebookIcon,
       pathBreadcrumb || void 0,
       updatedAt,
       content,
@@ -453,14 +500,16 @@ var SiYuanConnector = class extends Connector {
       content_format: "markdown",
       doc_type: DOC_TYPE,
       doc_updated_at: updatedAt,
-      original_file_size: fullContent.length,
+      // Byte length, not string length: CJK characters take 3 bytes each,
+      // so `String.length` under-reports the real payload size.
+      original_file_size: new TextEncoder().encode(fullContent).length,
       metadata: {
         url: `siyuan://blocks/${doc.id}`,
         created_at: createdAt,
         notebook: notebookId,
         notebook_name: notebookName,
         doc_path: pathBreadcrumb,
-        tags: extractTags(content),
+        tags,
         links
       }
     });

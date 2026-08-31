@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.3] - 2026-08-31
+
+### Fixed
+
+- **No more duplicated context in search results** — the content header no
+  longer repeats the notebook name and icon that the title already shows (this
+  affected 100% of indexed documents)
+- Breadcrumbs drop a leading segment equal to the notebook name and a trailing
+  segment equal to the document title, since both appear in the title
+- Bare block references `((id))` with no anchor text now convert to a link
+  instead of printing the raw block ID
+- Embed blocks with `col` layout, `id="..."` attributes, or empty bodies are now
+  cleaned up; previously `{{{row id="..."}}}` leaked into previews
+- `<div>` and `<br>` tags are stripped alongside `<span>`; `<br>` becomes a real
+  line break instead of disappearing
+- SiYuan highlight syntax `==text==` no longer renders as literal equals signs
+- Workspace-local images (`![](assets/x.png)`) become a `🖼` text marker instead
+  of rendering as broken images
+- Empty documents no longer echo their own title back as the body
+- `original_file_size` reports byte length instead of UTF-16 code units, which
+  under-reported CJK-heavy documents by up to 3x
+
+### Changed
+
+- Reading time scores CJK (~400 chars/min) and Latin (~200 words/min) separately
+  rather than applying a single rate to both
+- Overlong titles truncate to 60 characters with an ellipsis so they cannot blow
+  out the result row layout
+- Thousands separators use a fixed locale for deterministic output
+- **Debug logging is now opt-in** via `SIYUAN_CONNECTOR_DEBUG_LOG`
+
+### Security
+
+- Removed real company names and SiYuan block IDs that a previous revision had
+  committed to `src/index.test.ts`
+- Debug logging no longer writes to a hardcoded `C:\Users\<account>\...` path,
+  which leaked a Windows account name and failed on other machines
+
 ## [0.3.2] - 2026-08-24
 
 ### Fixed

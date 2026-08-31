@@ -8,8 +8,12 @@ import {
 	cleanEmbedBlocks,
 	cleanMarkdown,
 	convertBlockRefs,
+	convertHighlights,
+	convertLocalImages,
 	countWords,
+	countWordsDetailed,
 	estimateReadTime,
+	estimateReadTimeDetailed,
 	extractLinks,
 	extractParentDocId,
 	extractTags,
@@ -20,6 +24,7 @@ import {
 	stripDuplicateH1,
 	stripInlineHtml,
 	toRfc3339,
+	truncateTitle,
 } from './utils.ts';
 
 Deno.test('toRfc3339 converts SiYuan YYYYMMDDHHmmss to RFC 3339 UTC', () => {
@@ -61,12 +66,12 @@ Deno.test('extractTags returns empty string for no tags', () => {
 });
 
 Deno.test('extractParentDocId returns last segment id from SiYuan path', () => {
-	const path = '/20260823120000-abc123/20260823130000-def456';
+	const path = '/20260101000008-hhhhhhh/20260823130000-def456';
 	assert.equal(extractParentDocId(path), '20260823130000-def456');
 });
 
 Deno.test('extractParentDocId handles 20-char ID format', () => {
-	const path = '/20260823120000-20260823120000-abc12345';
+	const path = '/20260823120000-20260101000008-hhhhhhh45';
 	const result = extractParentDocId(path);
 	assert.equal(result !== undefined, true);
 });
@@ -184,18 +189,41 @@ Deno.test('stripDuplicateH1 removes leading H1 matching title', () => {
 	);
 });
 
-Deno.test('buildContentHeader generates blockquote with notebook info', () => {
+Deno.test('buildContentHeader shows path, freshness and tags', () => {
 	const header = buildContentHeader(
-		'笔记',
-		'1f4d4',
-		'示例文档',
+		'子目录',
 		'2026-03-22T22:02:13.000Z',
+		'这是一段测试内容，用于验证字数统计功能。',
+		'日记,反思',
 	);
 	assert.equal(header.startsWith('> '), true);
-	assert.equal(header.includes('📔'), true);
-	assert.equal(header.includes('笔记'), true);
-	assert.equal(header.includes('示例文档'), true);
-	assert.equal(header.includes('2026-03-22'), true);
+	assert.equal(header.includes('📁 子目录'), true);
+	assert.equal(header.includes('📅'), true);
+	assert.equal(header.includes('📝'), true);
+	assert.equal(header.includes('🏷️'), true);
+	assert.equal(header.includes('#日记'), true);
+	assert.equal(header.includes('#反思'), true);
+});
+
+Deno.test('buildContentHeader omits the path line for root-level docs', () => {
+	const header = buildContentHeader(
+		undefined,
+		'2026-03-22T22:02:13.000Z',
+		'内容',
+	);
+	assert.equal(header.includes('📁'), false);
+	assert.equal(header.includes('📅'), true);
+});
+
+Deno.test('buildContentHeader does not repeat context already in the title', () => {
+	// The title already renders "<icon> <doc title> · <notebook>", so the
+	// header must not print the notebook name or icon a second time.
+	const header = buildContentHeader(
+		'子目录',
+		'2026-03-22T22:02:13.000Z',
+		'内容',
+	);
+	assert.equal(header.includes('📔'), false);
 });
 
 Deno.test('buildContentHeader returns empty for no input', () => {
@@ -206,28 +234,28 @@ Deno.test('buildContentHeader returns empty for no input', () => {
 });
 
 Deno.test('convertBlockRefs converts ((id "text")) to quoted reference', () => {
-	const input = '前文 ((20260307230420-xyno4aj "引用内容")) 后文';
+	const input = '前文 ((20260101000001-aaaaaaa "引用内容")) 后文';
 	const result = convertBlockRefs(input);
 	assert.equal(result.includes('((20260307230420'), false);
 	assert.equal(
-		result.includes('「引用内容」[↗](siyuan://blocks/20260307230420-xyno4aj)'),
+		result.includes('「引用内容」[↗](siyuan://blocks/20260101000001-aaaaaaa)'),
 		true,
 	);
 });
 
 Deno.test('convertBlockRefs handles single quotes', () => {
-	const input = "((20240626111812-rqqp2j0 '示例公司'))";
+	const input = "((20260101000003-ccccccc '示例公司'))";
 	const result = convertBlockRefs(input);
 	assert.equal(result.includes('「示例公司」'), true);
-	assert.equal(result.includes('siyuan://blocks/20240626111812-rqqp2j0'), true);
+	assert.equal(result.includes('siyuan://blocks/20260101000003-ccccccc'), true);
 });
 
 Deno.test('convertBlockRefs handles multiple inline refs in a sentence', () => {
 	const input =
-		'上会项目：((20260327133933-ui6a7kx "安徽晶镁光罩有限公司"))、((20260327133938-9puiyeo "合肥星能玄光科技有限责任公司"))';
+		'上会项目：((20260101000006-fffffff "示例公司A"))、((20260101000007-ggggggg "示例公司B"))';
 	const result = convertBlockRefs(input);
-	assert.equal(result.includes('「安徽晶镁光罩有限公司」'), true);
-	assert.equal(result.includes('「合肥星能玄光科技有限责任公司」'), true);
+	assert.equal(result.includes('「示例公司A」'), true);
+	assert.equal(result.includes('「示例公司B」'), true);
 	assert.equal(result.includes('>'), false);
 });
 
@@ -254,10 +282,10 @@ Deno.test('cleanEmbedBlocks converts {{{row...}}} to blockquote', () => {
 
 Deno.test('extractLinks pulls siyuan block IDs from markdown', () => {
 	const md =
-		'链接 [📑](siyuan://blocks/20240626150912-qvfqkr2) 和 [📄](siyuan://blocks/20260122172745-1sqymrt)';
+		'链接 [📑](siyuan://blocks/20260101000004-ddddddd) 和 [📄](siyuan://blocks/20260101000005-eeeeeee)';
 	const links = extractLinks(md);
-	assert.equal(links.includes('20240626150912-qvfqkr2'), true);
-	assert.equal(links.includes('20260122172745-1sqymrt'), true);
+	assert.equal(links.includes('20260101000004-ddddddd'), true);
+	assert.equal(links.includes('20260101000005-eeeeeee'), true);
 });
 
 Deno.test('extractLinks returns empty for no links', () => {
@@ -310,9 +338,7 @@ Deno.test('estimateReadTime returns at least 1', () => {
 
 Deno.test('buildContentHeader includes word count and read time', () => {
 	const header = buildContentHeader(
-		'笔记',
-		'1f4d4',
-		'示例文档',
+		'子目录',
 		'2026-03-22T22:02:13.000Z',
 		'这是一段测试内容，用于验证字数统计功能。',
 		'日记,反思',
@@ -324,4 +350,169 @@ Deno.test('buildContentHeader includes word count and read time', () => {
 	assert.equal(header.includes('🏷️'), true);
 	assert.equal(header.includes('#日记'), true);
 	assert.equal(header.includes('#反思'), true);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Display-pipeline regression tests
+//
+// These encode the SiYuan export constructs that previously leaked raw markup
+// into search previews. If one of these fails, previews show syntax noise.
+// ───────────────────────────────────────────────────────────────────────────
+
+Deno.test('convertBlockRefs converts bare ((id)) with no text', () => {
+	const result = convertBlockRefs('参见 ((20260101000001-aaaaaaa)) 处。');
+	assert.equal(result.includes('(('), false);
+	assert.equal(
+		result.includes('[↗](siyuan://blocks/20260101000001-aaaaaaa)'),
+		true,
+	);
+});
+
+Deno.test('cleanEmbedBlocks handles col layout', () => {
+	const result = cleanEmbedBlocks('{{{col\n列内容\n}}}');
+	assert.equal(result.includes('{{{'), false);
+	assert.equal(result.includes('> 列内容'), true);
+});
+
+Deno.test('cleanEmbedBlocks keeps a link for id-only embeds', () => {
+	const result = cleanEmbedBlocks('{{{row id="20260101000008-hhhhhhh"\n\n}}}');
+	assert.equal(result.includes('{{{'), false);
+	assert.equal(result.includes('}}}'), false);
+	assert.equal(
+		result.includes('siyuan://blocks/20260101000008-hhhhhhh'),
+		true,
+	);
+});
+
+Deno.test('cleanEmbedBlocks drops empty embeds that carry no id', () => {
+	assert.equal(cleanEmbedBlocks('{{{row\n\n}}}'), '');
+});
+
+Deno.test('convertHighlights maps ==text== to bold', () => {
+	assert.equal(
+		convertHighlights('这里是一段 ==被高亮的内容== 和其余文字。'),
+		'这里是一段 **被高亮的内容** 和其余文字。',
+	);
+});
+
+Deno.test('convertHighlights leaves setext heading underlines alone', () => {
+	assert.equal(convertHighlights('标题\n==='), '标题\n===');
+});
+
+Deno.test('convertLocalImages replaces workspace images with a marker', () => {
+	const result = convertLocalImages('![配图说明](assets/a.png)');
+	assert.equal(result.includes('!['), false);
+	assert.equal(result.includes('🖼 配图说明'), true);
+});
+
+Deno.test('convertLocalImages keeps remote images intact', () => {
+	const md = '![图](https://example.com/a.png)';
+	assert.equal(convertLocalImages(md), md);
+});
+
+Deno.test('convertLocalImages labels images without a caption', () => {
+	assert.equal(convertLocalImages('![](assets/a.png)'), '🖼 图片');
+});
+
+Deno.test('stripInlineHtml handles div and br', () => {
+	const result = stripInlineHtml('<div>包裹的内容</div>\n第一行<br>第二行');
+	assert.equal(result.includes('<div'), false);
+	assert.equal(result.includes('<br'), false);
+	assert.equal(result.includes('包裹的内容'), true);
+	assert.equal(result.includes('第一行\n第二行'), true);
+});
+
+Deno.test('countWordsDetailed splits CJK and Latin counts', () => {
+	assert.deepEqual(countWordsDetailed('你好 hello world'), {
+		cjk: 2,
+		latin: 2,
+	});
+	assert.deepEqual(countWordsDetailed(''), { cjk: 0, latin: 0 });
+});
+
+Deno.test('estimateReadTimeDetailed scores each script separately', () => {
+	// 400 CJK chars -> 1 min; 200 Latin words -> 1 min; together -> 2 min.
+	assert.equal(estimateReadTimeDetailed(400, 0), 1);
+	assert.equal(estimateReadTimeDetailed(0, 200), 1);
+	assert.equal(estimateReadTimeDetailed(400, 200), 2);
+	assert.equal(estimateReadTimeDetailed(0, 0), 1);
+});
+
+Deno.test('truncateTitle shortens overlong titles only', () => {
+	assert.equal(truncateTitle('短标题'), '短标题');
+	const result = truncateTitle('标题内容'.repeat(50));
+	assert.equal(result.length, 60);
+	assert.equal(result.endsWith('…'), true);
+});
+
+Deno.test('formatPathBreadcrumb drops segments already shown in the title', () => {
+	assert.equal(
+		formatPathBreadcrumb('/笔记/子目录/文档名', {
+			dropFirst: '笔记',
+			dropLast: '文档名',
+		}),
+		'子目录',
+	);
+});
+
+Deno.test('formatPathBreadcrumb keeps segments when nothing matches', () => {
+	assert.equal(
+		formatPathBreadcrumb('/项目A/子目录/文档名', {
+			dropFirst: '不存在的笔记本',
+			dropLast: '不存在的文档',
+		}),
+		'项目A / 子目录 / 文档名',
+	);
+});
+
+Deno.test('formatPathBreadcrumb never empties the breadcrumb', () => {
+	// A root-level document's only segment is itself: dropping it would leave
+	// an empty path, so it must be preserved.
+	assert.equal(
+		formatPathBreadcrumb('/文档名', { dropLast: '文档名' }),
+		'文档名',
+	);
+});
+
+Deno.test('cleanMarkdown leaves no SiYuan markup artifacts', () => {
+	// One document exercising every construct at once must come out clean.
+	const md = [
+		'---',
+		'title: 综合测试',
+		'---',
+		'',
+		'# 综合测试',
+		'',
+		'<span data-type="text">📄</span> 引用 ((20260101000001-aaaaaaa "文本"))',
+		'与裸引用 ((20260101000002-bbbbbbb))。',
+		'',
+		'{{{row id="20260101000008-hhhhhhh"',
+		'',
+		'}}}',
+		'',
+		'高亮 ==重点内容== 结束。',
+		'',
+		'![配图](assets/a.png)',
+		'',
+		'<div>块级内容</div>',
+	].join('\n');
+
+	const result = cleanMarkdown(md);
+	const artifacts = [
+		'---',
+		'{{{',
+		'}}}',
+		'((',
+		'))',
+		'==',
+		'<span',
+		'<div',
+		'![',
+	];
+	for (const bad of artifacts) {
+		assert.equal(result.includes(bad), false, `残留语法: ${bad}`);
+	}
+	assert.equal(result.includes('「文本」'), true);
+	assert.equal(result.includes('**重点内容**'), true);
+	assert.equal(result.includes('🖼 配图'), true);
 });

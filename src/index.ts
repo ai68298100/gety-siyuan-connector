@@ -16,6 +16,7 @@ import {
 	iconCodepointToEmoji,
 	stripDuplicateH1,
 	toRfc3339,
+	truncateTitle,
 } from './utils.ts';
 
 /**
@@ -33,22 +34,46 @@ type SiyuanState = {
 
 const DOC_TYPE = 'siyuan:doc';
 
+/** Shown instead of the title for documents with no exported content, so an
+ * empty note does not just echo its own title back at the reader. */
+const EMPTY_DOC_PLACEHOLDER = '*（暂无内容）*';
+
+/**
+ * Resolve the optional debug-log destination from the environment.
+ *
+ * Logging is OFF unless SIYUAN_CONNECTOR_DEBUG_LOG is set. Writing to a
+ * hardcoded per-user path (as an earlier revision did) leaked a Windows
+ * account name into a published connector and failed outright on other
+ * machines, so the destination is now explicit and opt-in.
+ */
+function readDebugLogPath(): string | undefined {
+	try {
+		const value = Deno.env.get('SIYUAN_CONNECTOR_DEBUG_LOG');
+		return value && value.trim().length > 0 ? value.trim() : undefined;
+	} catch {
+		// No env permission in the host sandbox — stay silent.
+		return undefined;
+	}
+}
+
 export default class SiYuanConnector extends Connector<
 	ManifestConfig,
 	SiyuanState
 > {
 	private client!: SiYuanClient;
 
+	/** Optional debug log destination. Undefined means logging is disabled. */
+	private readonly debugLogPath = readDebugLogPath();
+
 	/** Write a debug line to a file so we can see what happens inside Gety
-	 * (console is redirected to IPC and not visible in app logs). */
+	 * (console is redirected to IPC and not visible in app logs).
+	 * No-op unless SIYUAN_CONNECTOR_DEBUG_LOG is set. */
 	private debug(msg: string): void {
+		const path = this.debugLogPath;
+		if (!path) return;
 		try {
 			const line = `${new Date().toISOString()} ${msg}\n`;
-			Deno.writeTextFileSync(
-				'C:\\Users\\Admin\\siyuan-connector-debug.log',
-				line,
-				{ append: true },
-			);
+			Deno.writeTextFileSync(path, line, { append: true });
 		} catch {
 			// Best-effort; never fail the connector over logging.
 		}
@@ -236,22 +261,32 @@ export default class SiYuanConnector extends Connector<
 		const notebookName = notebookNames.get(notebookId) ?? '';
 		const notebookIcon = notebookIcons.get(notebookId);
 		const rawTitle = doc.content || doc.hpath || doc.id;
-		// Title includes notebook icon + name for rich search context.
+		// Truncate the core title before suffixing the notebook name so an
+		// overlong document name can't blow out the result row layout.
 		const iconEmoji = iconCodepointToEmoji(notebookIcon);
-		const titleWithNb = buildDisplayTitle(rawTitle, notebookName || undefined);
-		const title = iconEmoji ? `${iconEmoji} ${titleWithNb}` : titleWithNb;
+		const titleCore = buildDisplayTitle(
+			truncateTitle(rawTitle),
+			notebookName || undefined,
+		);
+		const title = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
 		const updatedAt = toRfc3339(doc.updated);
 		const createdAt = toRfc3339(doc.created);
-		const pathBreadcrumb = formatPathBreadcrumb(doc.hpath);
+		// Breadcrumb keeps only the parent path: a leading segment equal to the
+		// notebook name and the trailing segment equal to the document title are
+		// both already visible in the title, so drop them.
+		const pathBreadcrumb = formatPathBreadcrumb(doc.hpath, {
+			dropFirst: notebookName || undefined,
+			dropLast: rawTitle,
+		});
 		// Clean: strip frontmatter, invisible chars, duplicate H1, collapse blanks.
 		let content = cleanMarkdown(rawMarkdown);
 		content = stripDuplicateH1(content, rawTitle);
-		content = content.trim() || rawTitle;
+		// Empty documents fall back to a neutral marker rather than echoing the
+		// title, which is already shown as the document title.
+		content = content.trim() || EMPTY_DOC_PLACEHOLDER;
 		const tags = extractTags(content);
-		// Prepend a blockquote header with icon, path, date, word count, tags.
+		// Prepend a blockquote header with path, date, word count, and tags.
 		const header = buildContentHeader(
-			notebookName || undefined,
-			notebookIcon,
 			pathBreadcrumb || undefined,
 			updatedAt,
 			content,
@@ -268,14 +303,16 @@ export default class SiYuanConnector extends Connector<
 			content_format: 'markdown',
 			doc_type: DOC_TYPE,
 			doc_updated_at: updatedAt,
-			original_file_size: fullContent.length,
+			// Byte length, not string length: CJK characters take 3 bytes each,
+			// so `String.length` under-reports the real payload size.
+			original_file_size: new TextEncoder().encode(fullContent).length,
 			metadata: {
 				url: `siyuan://blocks/${doc.id}`,
 				created_at: createdAt,
 				notebook: notebookId,
 				notebook_name: notebookName,
 				doc_path: pathBreadcrumb,
-				tags: extractTags(content),
+				tags,
 				links,
 			},
 		});

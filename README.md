@@ -22,25 +22,36 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 
 ## 内容处理管线
 
-思源导出的 Markdown 经过 7 步清理与美化，确保在 Gety 中显示干净美观：
+思源导出的 Markdown 经过 10 步清理与美化，确保在 Gety 中显示干净美观：
 
-| 步骤              | 处理                        | 示例                                      |
-| ----------------- | --------------------------- | ----------------------------------------- |
-| 1. 去 frontmatter | 移除 YAML 元数据块          | `---\ntitle:...\n---` → 移除              |
-| 2. 去零宽字符     | 移除不可见 Unicode          | `‍` U+200D → 移除                          |
-| 3. 去内联 HTML    | 移除思源嵌入的 span 标签    | `<span data-type="text">📄</span>` → `📄` |
-| 4. 块引用转换     | `((id "文本"))` → 内联引用  | `「文本」[↗](siyuan://blocks/id)`         |
-| 5. 嵌入块清理     | `{{{row ...}}}` → 引用块    | `> 内容`                                  |
-| 6. 去重 H1        | 移除与标题重复的 H1         | `# 标题` → 移除                           |
-| 7. 双链提取       | 收集 siyuan:// 链接到元数据 | `metadata.links`                          |
+| 步骤              | 处理                                           | 示例                                                     |
+| ----------------- | ---------------------------------------------- | -------------------------------------------------------- |
+| 1. 去 frontmatter | 移除 YAML 元数据块                             | `---\ntitle:...\n---` → 移除                             |
+| 2. 去零宽字符     | 移除不可见 Unicode（U+200B/200D/FEFF 等）      | 移除                                                     |
+| 3. 去内联 HTML    | 移除思源嵌入的标签                             | `<span data-type="text">📄</span>` → `📄`；`<br>` → 换行 |
+| 4. 块引用转换     | `((id "文本"))` → 内联引用，含无文本 `((id))`  | `「文本」[↗](siyuan://blocks/id)`                        |
+| 5. 嵌入块清理     | `{{{row ...}}}` / `{{{col ...}}}` → 引用块     | `> 内容`；空嵌入块 → 源块链接                            |
+| 6. 高亮转换       | `==高亮==` → `**加粗**`（Markdown 无高亮语法） | `==重点==` → `**重点**`                                  |
+| 7. 本地图片转换   | `![](assets/x.png)` → 文本标记，避免破图       | `🖼 配图说明`                                             |
+| 8. 压缩空行       | 3+ 连续空行 → 1 个空行                         | —                                                        |
+| 9. 去重 H1        | 移除与标题重复的 H1                            | `# 标题` → 移除                                          |
+| 10. 双链提取      | 收集 siyuan:// 链接到元数据                    | `metadata.links`                                         |
 
-搜索结果头部显示信息条：
+### 标题与内容头部的分工
+
+标题已经包含笔记本图标与名称，内容头部只补充**标题里没有的信息**，避免每条搜索结果都重复显示同样的上下文：
+
+- 标题：`📔 示例文档标题 · 日记本`
+- 内容头部：父路径、更新时间、字数、阅读时长、标签
 
 ```
-> 📔 日记本 · 示例文档标题
+> 📁 子目录
 > 📅 3天前 · 📝 2,400 字 · ⏱ 6 分钟
 > 🏷️ #标签1 #标签2 #标签3
 ```
+
+根目录下的文档没有父路径，内容头部会自动省略 `📁` 那一行。超长标题会截断到 60
+字，避免撑破结果列表的布局。
 
 ## Prerequisites / 前置要求
 
@@ -109,6 +120,36 @@ deno task runner -- --reset-state
 ```
 
 输出快照在 `dev/runs/<timestamp>/`，可用 `--polls 2` 验证增量同步。
+
+### Debug logging / 调试日志
+
+连接器内部的 `console` 输出会被 Gety 重定向到
+IPC，在应用日志里看不到。需要排查时，用环境变量指定日志文件路径即可开启：
+
+```bash
+# Windows
+export SIYUAN_CONNECTOR_DEBUG_LOG="C:\Users\you\siyuan-connector-debug.log"
+# macOS / Linux
+export SIYUAN_CONNECTOR_DEBUG_LOG="/tmp/siyuan-connector-debug.log"
+```
+
+**默认关闭**：不设置该变量时不会写入任何文件。日志会记录 `onLoad` 与每次 `poll`
+的文档数、批次信息，可能包含笔记本名称，请按需开启并自行保管。
+
+### Diagnose display issues / 显示诊断
+
+用一组覆盖思源各类导出语法的样本跑一遍渲染管线，报告残留语法与显示缺陷：
+
+```bash
+deno run -A dev/display-diagnose.ts
+```
+
+配置好 `.env` 后，可以对真实笔记做只读诊断 —— 只输出缺陷统计，**不会打印
+笔记正文**：
+
+```bash
+deno run -A --env-file=.env dev/display-diagnose.ts --live 40
+```
 
 ## Troubleshooting / 排错
 
