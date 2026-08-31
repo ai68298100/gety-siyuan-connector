@@ -17,8 +17,8 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 - **删除检测** — 文档被删除/移出笔记本后自动从 Gety 索引中移除
 - **代码块保护** — 围栏代码块、行内代码、数学公式在清理过程中被完整保护，
   代码中的 `==`、`(( ))`、HTML 标签、空行不会被误转换
-- **frontmatter 标签** — 思源文档 YAML 中的 `tags:` 字段被提取并索引，
-  不再随 frontmatter 一起丢弃
+- **frontmatter 标签** — 思源文档 YAML 中的 `tags:` 字段被提取并索引， 不再随
+  frontmatter 一起丢弃
 - **一键跳转编辑** — 点击搜索结果通过 `siyuan://blocks/<id>`
   协议在思源中打开对应文档
 - **丰富元数据** — 笔记本名、路径面包屑、标签、双链关系均可搜索
@@ -30,24 +30,25 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 
 思源导出的 Markdown 经过 12 步清理与美化，确保在 Gety 中显示干净美观：
 
-| 步骤               | 处理                                                        | 示例                                                     |
-| ------------------ | ----------------------------------------------------------- | -------------------------------------------------------- |
-| 0. 保护代码与公式  | 围栏代码、行内代码、`$...$` / `$$...$$` 替换为占位符        | 代码块内容不被后续步骤破坏                               |
-| 1. 去 frontmatter  | 移除 YAML 元数据块（先提取其中的 `tags:`）                   | `---\ntitle:...\n---` → 移除                             |
-| 2. 去零宽字符      | 移除不可见 Unicode（U+200B/200D/FEFF 等）                   | 移除                                                     |
-| 3. 去内联 HTML     | 移除思源嵌入的标签（含 table/list/media 包装器）             | `<span data-type="text">📄</span>` → `📄`；`<br>` → 换行 |
-| 4. 块引用转换      | `((id "文本"))` → 内联引用，含无文本 `((id))`                | `「文本」[↗](siyuan://blocks/id)`                        |
-| 5. 嵌入块清理      | `{{{row ...}}}` / `{{{col ...}}}` → 引用块                   | `> 内容`；空嵌入块 → 源块链接                            |
-| 6. 高亮转换        | `==高亮==` → `**加粗**`（Markdown 无高亮语法）              | `==重点==` → `**重点**`                                  |
-| 7. 本地资源转换    | 工作区文件按类型标记：图片🖼、音频🎵、视频🎬、附件📎          | `![图](assets/a.png)` → `🖼 图`                          |
-| 8. 压缩空行        | 3+ 连续空行 → 1 个空行（代码块内不受影响）                   | —                                                        |
-| 9. 恢复代码与公式  | 将占位符还原为原始代码/公式                                  | 代码块完整恢复                                           |
-| 10. 去重 H1        | 移除与标题重复的 H1                                          | `# 标题` → 移除                                          |
-| 11. 双链提取       | 收集 siyuan:// 链接到元数据                                  | `metadata.links`                                         |
+| 步骤              | 处理                                                 | 示例                                                     |
+| ----------------- | ---------------------------------------------------- | -------------------------------------------------------- |
+| 0. 保护代码与公式 | 围栏代码、行内代码、`$...$` / `$$...$$` 替换为占位符 | 代码块内容不被后续步骤破坏                               |
+| 1. 去 frontmatter | 移除 YAML 元数据块（先提取其中的 `tags:`）           | `---\ntitle:...\n---` → 移除                             |
+| 2. 去零宽字符     | 移除不可见 Unicode（U+200B/200D/FEFF 等）            | 移除                                                     |
+| 3. 去内联 HTML    | 移除思源嵌入的标签（含 table/list/media 包装器）     | `<span data-type="text">📄</span>` → `📄`；`<br>` → 换行 |
+| 4. 块引用转换     | `((id "文本"))` → 内联引用，含无文本 `((id))`        | `「文本」[↗](siyuan://blocks/id)`                        |
+| 5. 嵌入块清理     | `{{{row ...}}}` / `{{{col ...}}}` → 引用块           | `> 内容`；空嵌入块 → 源块链接                            |
+| 6. 高亮转换       | `==高亮==` → `**加粗**`（Markdown 无高亮语法）       | `==重点==` → `**重点**`                                  |
+| 7. 本地资源转换   | 工作区文件按类型标记：图片🖼、音频🎵、视频🎬、附件📎  | `![图](assets/a.png)` → `🖼 图`                           |
+| 8. 压缩空行       | 3+ 连续空行 → 1 个空行（代码块内不受影响）           | —                                                        |
+| 9. 恢复代码与公式 | 将占位符还原为原始代码/公式                          | 代码块完整恢复                                           |
+| 10. 去重 H1       | 移除与标题重复的 H1                                  | `# 标题` → 移除                                          |
+| 11. 双链提取      | 收集 siyuan:// 链接到元数据                          | `metadata.links`                                         |
 
 ### 标题与内容头部的分工
 
-标题已经包含笔记本图标与名称，内容头部采用 **compact 模式**，只显示路径和更新时间，
+标题已经包含笔记本图标与名称，内容头部采用 **compact
+模式**，只显示路径和更新时间，
 为正文预留更多搜索预览空间。字数、阅读时长、标签等信息存储在 `metadata` 中，
 可通过 Gety 的元数据筛选使用：
 
@@ -88,7 +89,8 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 3. 在 Gety 中选择仓库根文件夹安装
 
 安装后在 Gety → Settings → Connectors 中点击 **Update now** 触发首次索引
-（视文档数量而定，并发模式下通常 30 秒-1 分钟）。之后默认每 30 分钟增量同步一次。
+（视文档数量而定，并发模式下通常 30 秒-1 分钟）。之后默认每 30
+分钟增量同步一次。
 
 ## Configuration / 配置
 
@@ -129,7 +131,7 @@ deno task build
 deno task verify
 ```
 
-包含格式化检查、lint、单元测试（56 个）和构建。
+包含格式化检查、lint、单元测试（59 个）和构建。
 
 ### Exercise the lifecycle locally / 本地试跑
 
@@ -153,8 +155,8 @@ set SIYUAN_CONNECTOR_DEBUG_LOG=C:\Users\you\siyuan-connector-debug.log
 export SIYUAN_CONNECTOR_DEBUG_LOG=/tmp/siyuan-connector-debug.log
 ```
 
-**默认关闭**：不设置该变量时不会写入任何文件。日志采用缓冲写入（每 50 条
-或 poll 结束时 flush），减少文件 IO。日志会记录 `onLoad` 与每次 `poll`
+**默认关闭**：不设置该变量时不会写入任何文件。日志采用缓冲写入（每 50 条 或 poll
+结束时 flush），减少文件 IO。日志会记录 `onLoad` 与每次 `poll`
 的文档数、批次信息，可能包含笔记本名称，请按需开启并自行保管。
 
 ### Diagnose display issues / 显示诊断
@@ -210,7 +212,7 @@ manifest.json          # Connector manifest (id/name/config/icon/schedule)
 src/index.ts           # Connector implementation (poll lifecycle, concurrent export)
 src/siyuan-client.ts   # SiYuan kernel HTTP API client (incremental SQL queries)
 src/utils.ts           # Pure content-cleaning helpers (code protection, tag extraction)
-src/index.test.ts      # Unit tests (56)
+src/index.test.ts      # Unit tests (59)
 dist/main.js           # Built bundle loaded by Gety
 icon.svg / icon.png    # SiYuan logo icons
 scripts/               # Build tooling (esbuild bundler)
@@ -219,10 +221,12 @@ dev/                   # SDK + local runner + test harness
 
 ## Version history / 版本历史
 
-- **v0.4.0** — 并发导出（6 并发）、增量 SQL 查询、代码块/公式保护、
-  frontmatter 标签提取、本地资源分类（音视频附件）、compact 内容头部、
-  debug 日志缓冲、统一 ID 正则（支持新版 20+ 字符 ID）、移除死代码、
-  测试增至 56 个
+- **v0.4.1** — 修复 Release 打包缺失 `dist/` 目录、导出失败永不重试 （新增
+  `pendingRetry` 机制）、关闭笔记本导致文档被误删；新增 `listDocsByIds`
+  与对应单元测试
+- **v0.4.0** — 并发导出（6 并发）、增量 SQL 查询、代码块/公式保护、 frontmatter
+  标签提取、本地资源分类（音视频附件）、compact 内容头部、 debug 日志缓冲、统一
+  ID 正则（支持新版 20+ 字符 ID）、移除死代码、 测试增至 56 个
 - **v0.3.3** — 修复搜索结果重复上下文、裸块引用、嵌入块、HTML 标签、
   高亮语法、本地图片、空文档回退、文件大小计算
 - **v0.3.2** — 修复单引号块引用转换、内联块引用破坏文本流、HTML span 清理

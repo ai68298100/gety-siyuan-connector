@@ -144,6 +144,22 @@ export class SiYuanClient {
 		return this.query(stmt);
 	}
 
+	/**
+	 * Fetch full metadata for a specific set of document IDs. Used to retry
+	 * documents whose export previously failed: incremental queries keyed on
+	 * the `updated` timestamp cannot rediscover them once the cursor has
+	 * advanced, so we re-fetch them by ID instead.
+	 */
+	listDocsByIds(ids: string[]): Promise<SiyuanBlock[]> {
+		if (ids.length === 0) return Promise.resolve([]);
+		const quoted = ids.map((id) => `'${this.escapeSql(id)}'`).join(', ');
+		const stmt =
+			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
+			`FROM blocks WHERE type = 'd' AND id IN (${quoted}) ` +
+			`ORDER BY path ASC`;
+		return this.query(stmt);
+	}
+
 	/** Run an arbitrary SQL query against the SiYuan kernel. */
 	async query(stmt: string): Promise<SiyuanBlock[]> {
 		// post() unwraps the {code,msg,data} envelope, so the result IS the

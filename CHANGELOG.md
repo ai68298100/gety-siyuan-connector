@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1] - 2026-08-31
+
+### Fixed
+
+- **Release zip was missing `dist/`** — the packaging step copied `dist/main.js`
+  into the zip root, but the manifest `entry` points to `dist/main.js`, so the
+  packaged connector could not be loaded. The zip now preserves the `dist/`
+  directory structure.
+- **Failed exports were never retried** — a document whose `exportMdContent`
+  call failed was still recorded in the sync state, so the incremental query
+  (keyed on `updated`) would skip it forever. Failed docs are now tracked in a
+  `pendingRetry` state field and re-fetched by ID on the next poll.
+- **Closing a notebook dropped its documents permanently** — deletion detection
+  only looked at open notebooks, so closing (not deleting) a notebook marked
+  every document as removed; reopening could not restore them because the
+  incremental query had advanced past their timestamps. Live-ID detection now
+  covers all notebooks including closed ones.
+
+### Added
+
+- **`listDocsByIds`** — new client method to re-fetch document metadata by ID,
+  powering the failed-export retry.
+- **`siyuan-client.test.ts`** — unit tests for `listDocsByIds` SQL construction,
+  escaping, and empty-input handling (3 tests).
+
 ## [0.4.0] - 2026-08-31
 
 ### Added
