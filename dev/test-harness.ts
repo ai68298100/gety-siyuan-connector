@@ -18,11 +18,8 @@ if (typeof ConnectorClass !== 'function') {
 
 const instance = new ConnectorClass();
 const config = {
-	api_url: Deno.env.get('SIYUAN_API_URL') ?? 'http://localhost:6806',
-	api_token: Deno.env.get('SIYUAN_API_TOKEN') ?? '',
-	exclude_notebooks: '',
-	page_size: 50,
-	include_block_content: false,
+	api_url: Deno.env.get('GETY_CONFIG_API_URL') ?? 'http://localhost:6806',
+	api_token: Deno.env.get('GETY_CONFIG_API_TOKEN') ?? '',
 };
 const internals = instance as {
 	config: Record<string, unknown>;

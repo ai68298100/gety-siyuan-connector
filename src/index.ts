@@ -25,12 +25,13 @@ import {
  *
  * knownDocs maps doc_id -> updated timestamp, used both to detect deletions
  * and to skip content fetches for unchanged documents.
- * lastMaxUpdated is the highest `updated` timestamp seen so far, used as the
- * lower bound for incremental SQL queries.
+ * lastUpdatedByNotebook stores an inclusive incremental cursor per notebook.
+ * lastMaxUpdated is retained only as a migration fallback for v0.4.x state.
  * lastSyncAt is informational only.
  */
 type SiyuanState = {
 	knownDocs?: Record<string, string>;
+	lastUpdatedByNotebook?: Record<string, string>;
 	lastMaxUpdated?: string;
 	lastSyncAt?: string;
 	/** Doc IDs whose export failed on the previous poll, to retry by ID. */
@@ -89,8 +90,8 @@ export default class SiYuanConnector extends Connector<
 		const apiUrl = (this.config.api_url ?? 'http://localhost:6806').trim();
 		const apiToken = (this.config.api_token ?? '').trim();
 		this.debug(
-			`onLoad start. apiUrl=${apiUrl} apiToken.length=${apiToken.length}` +
-				` apiToken_prefix=${apiToken.slice(0, 4)}...` +
+			`onLoad start. apiUrl=${apiUrl} apiToken.present=${apiToken.length > 0}` +
+				` apiToken.length=${apiToken.length}` +
 				` configKeys=${Object.keys(this.config).join(',')}`,
 		);
 		this.client = new SiYuanClient(apiUrl, apiToken, this.signal);
@@ -141,7 +142,7 @@ export default class SiYuanConnector extends Connector<
 
 		const notebookNames = new Map<string, string>();
 		const notebookIcons = new Map<string, string>();
-		for (const nb of notebooks) {
+		for (const nb of allNotebooks) {
 			notebookNames.set(nb.id, nb.name);
 			if (nb.icon) notebookIcons.set(nb.id, nb.icon);
 		}
@@ -162,19 +163,20 @@ export default class SiYuanConnector extends Connector<
 		// Phase 2: incremental fetch of changed documents.
 		const previousDocs = this.lastState?.knownDocs ?? {};
 		const previousIds = new Set(Object.keys(previousDocs));
-		const lastMaxUpdated = this.lastState?.lastMaxUpdated;
+		const previousCursors = this.lastState?.lastUpdatedByNotebook ?? {};
+		const legacyCursor = this.lastState?.lastMaxUpdated;
 		const previousRetryIds = this.lastState?.pendingRetry ?? [];
 
 		const changedDocs: SiyuanBlock[] = [];
-		let maxUpdated = lastMaxUpdated ?? '';
 
 		for (const nb of notebooks) {
 			if (this.signal.aborted) return;
 			let blocks: SiyuanBlock[];
-			if (lastMaxUpdated) {
-				blocks = await this.client.listDocBlocksSince(nb.id, lastMaxUpdated);
+			const cursor = previousCursors[nb.id] ?? legacyCursor;
+			if (cursor) {
+				blocks = await this.client.listDocBlocksSince(nb.id, cursor);
 				this.debug(
-					`poll: notebook ${nb.name} incremental since ${lastMaxUpdated} → ${blocks.length} docs`,
+					`poll: notebook ${nb.name} incremental since ${cursor} → ${blocks.length} docs`,
 				);
 			} else {
 				blocks = await this.client.listDocBlocks(nb.id);
@@ -184,7 +186,6 @@ export default class SiYuanConnector extends Connector<
 			}
 			for (const b of blocks) {
 				changedDocs.push(b);
-				if (b.updated && b.updated > maxUpdated) maxUpdated = b.updated;
 			}
 		}
 
@@ -201,20 +202,17 @@ export default class SiYuanConnector extends Connector<
 			);
 		}
 
+		const retryFoundIds = new Set(retryDocs.map((doc) => doc.id));
+
 		// Phase 3: detect deletions.
 		const deletedDocIds: string[] = [];
 		for (const id of previousIds) {
 			if (!liveIds.has(id)) deletedDocIds.push(id);
 		}
 
-		if (deletedDocIds.length > 0) {
-			this.debug(`poll: ${deletedDocIds.length} docs to delete`);
-			yield { updates: deletedDocIds.map((id) => del(id)) };
-		}
-
 		// Phase 4: filter changed docs by exact updated timestamp.
-		// (listDocBlocksSince may return docs at the boundary; knownDocs
-		// comparison ensures we only re-fetch genuinely changed ones.)
+		// (listDocBlocksSince includes the boundary; knownDocs comparison ensures
+		// we only re-fetch genuinely changed ones.)
 		// Retry docs are force-included regardless of their updated timestamp.
 		const docsByID = new Map<string, SiyuanBlock>();
 		for (const doc of changedDocs) {
@@ -238,6 +236,31 @@ export default class SiYuanConnector extends Connector<
 		// Track docs whose export still needs a retry on the next poll.
 		const nextRetry = new Set(previousRetryIds);
 		for (const id of deletedDocIds) nextRetry.delete(id);
+		for (const id of previousRetryIds) {
+			if (!retryFoundIds.has(id)) nextRetry.delete(id);
+		}
+
+		const nextCursors: Record<string, string> = { ...previousCursors };
+		if (legacyCursor) {
+			for (const nb of notebooks) {
+				if (nextCursors[nb.id] === undefined) nextCursors[nb.id] = legacyCursor;
+			}
+		}
+
+		const checkpoint = (): SiyuanState => ({
+			knownDocs: { ...nextDocs },
+			lastUpdatedByNotebook: { ...nextCursors },
+			lastSyncAt: new Date().toISOString(),
+			pendingRetry: Array.from(nextRetry),
+		});
+
+		if (deletedDocIds.length > 0) {
+			this.debug(`poll: ${deletedDocIds.length} docs to delete`);
+			yield {
+				updates: deletedDocIds.map((id) => del(id)),
+				state: checkpoint(),
+			};
+		}
 
 		// Phase 5: concurrent export + batch yield.
 		let yielded = 0;
@@ -254,28 +277,44 @@ export default class SiYuanConnector extends Connector<
 							markdown: exported.content ?? '',
 							exported: true,
 						};
-					} catch (err) {
+					} catch {
 						return {
 							doc,
-							markdown: `<!-- export failed: ${(err as Error).message} -->`,
+							markdown: '',
 							exported: false,
 						};
 					}
 				}),
 			);
 
-			const batch = chunkResults.map((r) =>
-				this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons)
-			);
+			const batch = chunkResults
+				.filter((r) => r.exported)
+				.map((r) =>
+					this.buildDocUpsert(
+						r.doc,
+						r.markdown,
+						notebookNames,
+						notebookIcons,
+					)
+				);
 
 			// Advance state only for successfully exported docs; failed ones
 			// keep their previous timestamp and are queued for a retry.
 			for (const r of chunkResults) {
 				if (r.exported) {
 					if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
+					const notebookId = r.doc.box ?? '';
+					if (
+						r.doc.updated &&
+						(!nextCursors[notebookId] ||
+							r.doc.updated > nextCursors[notebookId])
+					) {
+						nextCursors[notebookId] = r.doc.updated;
+					}
 					nextRetry.delete(r.doc.id);
 				} else {
 					nextRetry.add(r.doc.id);
+					this.debug(`export failed for doc ${r.doc.id}; queued for retry`);
 				}
 			}
 
@@ -285,12 +324,7 @@ export default class SiYuanConnector extends Connector<
 			);
 			yield {
 				updates: batch,
-				state: {
-					knownDocs: nextDocs,
-					lastMaxUpdated: maxUpdated,
-					lastSyncAt: new Date().toISOString(),
-					pendingRetry: Array.from(nextRetry),
-				},
+				state: checkpoint(),
 			};
 		}
 
@@ -299,12 +333,7 @@ export default class SiYuanConnector extends Connector<
 			this.debug('poll: no changes, yielding empty state checkpoint');
 			yield {
 				updates: [],
-				state: {
-					knownDocs: nextDocs,
-					lastMaxUpdated: maxUpdated,
-					lastSyncAt: new Date().toISOString(),
-					pendingRetry: Array.from(nextRetry),
-				},
+				state: checkpoint(),
 			};
 		}
 
@@ -325,10 +354,11 @@ export default class SiYuanConnector extends Connector<
 		const rawTitle = doc.content || doc.hpath || doc.id;
 		const iconEmoji = iconCodepointToEmoji(notebookIcon);
 		const titleCore = buildDisplayTitle(
-			truncateTitle(rawTitle),
+			rawTitle,
 			notebookName || undefined,
 		);
-		const title = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+		const titleWithIcon = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+		const title = truncateTitle(titleWithIcon);
 		const updatedAt = toRfc3339(doc.updated);
 		const createdAt = toRfc3339(doc.created);
 

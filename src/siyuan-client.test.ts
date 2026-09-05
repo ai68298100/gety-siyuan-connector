@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SiYuanClient } from './siyuan-client.ts';
+import { SiYuanClient, SiYuanError } from './siyuan-client.ts';
 
 /**
  * Captures the last SQL statement sent to /api/query/sql by mocking fetch.
@@ -71,5 +71,40 @@ Deno.test('listDocsByIds escapes single quotes in ids', async () => {
 		assert.match(captured[0].sql, /'it''s-id'/);
 	} finally {
 		restore();
+	}
+});
+
+Deno.test('listDocBlocksSince includes the timestamp boundary', async () => {
+	const { client, captured, restore } = createClientWithCapture();
+	try {
+		await client.listDocBlocksSince('nb-1', '20260905120000');
+		assert.match(captured[0].sql, /AND updated >= '20260905120000'/);
+	} finally {
+		restore();
+	}
+});
+
+Deno.test('post rejects an error envelope without a data field', async () => {
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = () =>
+		Promise.resolve(
+			new Response(JSON.stringify({ code: -1, msg: 'permission denied' }), {
+				status: 200,
+				headers: { 'Content-Type': 'application/json' },
+			}),
+		);
+	try {
+		const client = new SiYuanClient('http://localhost:6806', undefined, {
+			aborted: false,
+		} as AbortSignal);
+		await assert.rejects(
+			() => client.version(),
+			(error: unknown) =>
+				error instanceof SiYuanError &&
+				error.code === -1 &&
+				error.message.includes('permission denied'),
+		);
+	} finally {
+		globalThis.fetch = realFetch;
 	}
 });

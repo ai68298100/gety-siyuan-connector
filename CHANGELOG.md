@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.2] - 2026-09-05
+
+### Fixed
+
+- Sync checkpoints now advance per notebook and per completed export batch,
+  preventing interrupted polls from skipping documents.
+- Delete-only polls persist their checkpoint, and failed exports stay pending
+  for retry instead of indexing an error placeholder.
+- Closed notebook metadata remains available for retrying documents.
+- HTML cleanup removes executable blocks while preserving ordinary links; local
+  media classification handles query parameters without rewriting remote URLs.
+
+### Changed
+
+- Verification is read-only with `fmt --check`; release packaging checks that
+  the tag version matches `manifest.json`.
+
 ## [0.4.1] - 2026-08-31
 
 ### Fixed

@@ -131,7 +131,7 @@ deno task build
 deno task verify
 ```
 
-包含格式化检查、lint、单元测试（59 个）和构建。
+包含格式化检查、lint、单元测试（70 个）和构建。
 
 ### Exercise the lifecycle locally / 本地试跑
 
@@ -212,7 +212,7 @@ manifest.json          # Connector manifest (id/name/config/icon/schedule)
 src/index.ts           # Connector implementation (poll lifecycle, concurrent export)
 src/siyuan-client.ts   # SiYuan kernel HTTP API client (incremental SQL queries)
 src/utils.ts           # Pure content-cleaning helpers (code protection, tag extraction)
-src/index.test.ts      # Unit tests (59)
+src/index.test.ts      # Unit tests (61)
 dist/main.js           # Built bundle loaded by Gety
 icon.svg / icon.png    # SiYuan logo icons
 scripts/               # Build tooling (esbuild bundler)

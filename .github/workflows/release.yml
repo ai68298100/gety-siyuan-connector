@@ -28,6 +28,8 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           VERSION="${TAG#v}"
+          MANIFEST_VERSION="$(python3 -c 'import json; print(json.load(open("manifest.json"))["version"])')"
+          test "$VERSION" = "$MANIFEST_VERSION"
           PKG_NAME="gety-siyuan-connector-${VERSION}"
           mkdir -p "release/${PKG_NAME}/dist"
           cp manifest.json "release/${PKG_NAME}/"

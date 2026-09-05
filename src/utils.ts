@@ -190,6 +190,16 @@ export function stripInvisibleChars(text: string): string {
 export function stripInlineHtml(markdown: string): string {
 	if (!markdown) return '';
 	return markdown
+		// Remove executable/style blocks together with their contents.
+		.replace(/<(script|style|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+		// Preserve ordinary links before removing their HTML wrappers.
+		.replace(
+			/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+			(_match, href: string, text: string) => {
+				const safe = /^(?:https?:|mailto:|siyuan:)/i.test(href.trim());
+				return safe ? `[${text}](${href})` : text;
+			},
+		)
 		// Line breaks become real newlines.
 		.replace(/<br\s*\/?>/gi, '\n')
 		// Images are workspace-local and unreachable; drop the tag.
@@ -273,13 +283,17 @@ export function convertHighlights(markdown: string): string {
 export function convertLocalAssets(markdown: string): string {
 	if (!markdown) return '';
 	return markdown.replace(
-		/!\[([^\]]*)\]\((?!https?:)([^)]+)\)/g,
+		/!\[([^\]]*)\]\((?!https?:|\/\/|data:|siyuan:)([^)]+)\)/g,
 		(_, alt: string, url: string) => {
 			const caption = alt.trim();
-			const ext = (url.split('.').pop() || '').toLowerCase();
-			const name = url.split('/').pop() || url;
+			const cleanUrl = url.trim().replace(/^<|>$/g, '');
+			const path = cleanUrl.split(/[?#]/, 1)[0];
+			const ext = (path.split('.').pop() || '').toLowerCase();
+			const name = path.split('/').pop() || path;
 			if (
-				['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)
+				['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(
+					ext,
+				)
 			) {
 				return caption ? `🖼 ${caption}` : '🖼 图片';
 			}
@@ -431,14 +445,12 @@ export function formatPathBreadcrumb(
 	let segments = hpath.split('/').filter(Boolean);
 	if (
 		opts?.dropFirst &&
-		segments.length > 1 &&
 		segments[0] === opts.dropFirst
 	) {
 		segments = segments.slice(1);
 	}
 	if (
 		opts?.dropLast &&
-		segments.length > 1 &&
 		segments[segments.length - 1] === opts.dropLast
 	) {
 		segments = segments.slice(0, -1);

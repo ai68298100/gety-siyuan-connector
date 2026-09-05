@@ -42,12 +42,14 @@ var SiYuanClient = class {
     return this.query(stmt);
   }
   /**
-   * List document blocks updated since a SiYuan timestamp (YYYYMMDDHHmmss).
+   * List document blocks updated at or after a SiYuan timestamp
+   * (YYYYMMDDHHmmss). The inclusive boundary prevents same-second updates
+   * from being skipped; callers de-duplicate against their persisted state.
    * Used for incremental sync: only fetches docs whose `updated` advanced
    * since the last poll, avoiding a full metadata scan on steady state.
    */
   listDocBlocksSince(notebookId, sinceTimestamp) {
-    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' AND updated > '${this.escapeSql(sinceTimestamp)}' ORDER BY path ASC`;
+    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' AND updated >= '${this.escapeSql(sinceTimestamp)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
   /**
@@ -120,11 +122,19 @@ var SiYuanClient = class {
       );
     }
     const payload = await response.json();
-    if (typeof payload === "object" && payload !== null && "code" in payload && "data" in payload && typeof payload.code === "number") {
+    if (typeof payload === "object" && payload !== null && "code" in payload && typeof payload.code === "number") {
       const code = payload.code;
       if (code !== 0) {
         throw new SiYuanError(
           `SiYuan error on ${endpoint}: ${payload.msg}`,
+          response.status,
+          endpoint,
+          code
+        );
+      }
+      if (!("data" in payload)) {
+        throw new SiYuanError(
+          `SiYuan response missing data on ${endpoint}`,
           response.status,
           endpoint,
           code
@@ -228,7 +238,13 @@ function stripInvisibleChars(text) {
 }
 function stripInlineHtml(markdown) {
   if (!markdown) return "";
-  return markdown.replace(/<br\s*\/?>/gi, "\n").replace(/<img\b[^>]*>/gi, "").replace(
+  return markdown.replace(/<(script|style|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi, "").replace(
+    /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+    (_match, href, text) => {
+      const safe = /^(?:https?:|mailto:|siyuan:)/i.test(href.trim());
+      return safe ? `[${text}](${href})` : text;
+    }
+  ).replace(/<br\s*\/?>/gi, "\n").replace(/<img\b[^>]*>/gi, "").replace(
     /<\/?(?:div|p|section|article|header|footer|nav|aside|figure|figcaption|table|thead|tbody|tr|td|th|ul|ol|li|dl|dt|dd|blockquote|pre|h[1-6])\b[^>]*>/gi,
     "\n"
   ).replace(
@@ -271,12 +287,16 @@ function convertHighlights(markdown) {
 function convertLocalAssets(markdown) {
   if (!markdown) return "";
   return markdown.replace(
-    /!\[([^\]]*)\]\((?!https?:)([^)]+)\)/g,
+    /!\[([^\]]*)\]\((?!https?:|\/\/|data:|siyuan:)([^)]+)\)/g,
     (_, alt, url) => {
       const caption = alt.trim();
-      const ext = (url.split(".").pop() || "").toLowerCase();
-      const name = url.split("/").pop() || url;
-      if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(ext)) {
+      const cleanUrl = url.trim().replace(/^<|>$/g, "");
+      const path = cleanUrl.split(/[?#]/, 1)[0];
+      const ext = (path.split(".").pop() || "").toLowerCase();
+      const name = path.split("/").pop() || path;
+      if (["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico"].includes(
+        ext
+      )) {
         return caption ? `\u{1F5BC} ${caption}` : "\u{1F5BC} \u56FE\u7247";
       }
       if (["mp3", "wav", "ogg", "flac", "aac", "m4a"].includes(ext)) {
@@ -349,10 +369,10 @@ function buildDisplayTitle(docTitle, notebookName) {
 function formatPathBreadcrumb(hpath, opts) {
   if (!hpath) return "";
   let segments = hpath.split("/").filter(Boolean);
-  if (opts?.dropFirst && segments.length > 1 && segments[0] === opts.dropFirst) {
+  if (opts?.dropFirst && segments[0] === opts.dropFirst) {
     segments = segments.slice(1);
   }
-  if (opts?.dropLast && segments.length > 1 && segments[segments.length - 1] === opts.dropLast) {
+  if (opts?.dropLast && segments[segments.length - 1] === opts.dropLast) {
     segments = segments.slice(0, -1);
   }
   return segments.join(" / ");
@@ -403,7 +423,9 @@ function buildContentHeader(pathBreadcrumb, updatedAt, content, tags, compact = 
     lines.push(`\u{1F4C5} ${formatRelativeDate(updatedAt)}`);
   }
   if (lines.length === 0) return "";
-  return `> ${lines.join("  \n> ")}\n\n`;
+  return `> ${lines.join("  \n> ")}
+
+`;
 }
 
 // src/index.ts
@@ -426,7 +448,8 @@ var SiYuanConnector = class extends Connector {
   debug(msg) {
     const path = this.debugLogPath;
     if (!path) return;
-    this.debugBuffer.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${msg}\n`);
+    this.debugBuffer.push(`${(/* @__PURE__ */ new Date()).toISOString()} ${msg}
+`);
     if (this.debugBuffer.length >= 50) this.flushDebug();
   }
   flushDebug() {
@@ -444,7 +467,7 @@ var SiYuanConnector = class extends Connector {
     const apiUrl = (this.config.api_url ?? "http://localhost:6806").trim();
     const apiToken = (this.config.api_token ?? "").trim();
     this.debug(
-      `onLoad start. apiUrl=${apiUrl} apiToken.length=${apiToken.length} apiToken_prefix=${apiToken.slice(0, 4)}... configKeys=${Object.keys(this.config).join(",")}`
+      `onLoad start. apiUrl=${apiUrl} apiToken.present=${apiToken.length > 0} apiToken.length=${apiToken.length} configKeys=${Object.keys(this.config).join(",")}`
     );
     this.client = new SiYuanClient(apiUrl, apiToken, this.signal);
     try {
@@ -480,7 +503,7 @@ var SiYuanConnector = class extends Connector {
     );
     const notebookNames = /* @__PURE__ */ new Map();
     const notebookIcons = /* @__PURE__ */ new Map();
-    for (const nb of notebooks) {
+    for (const nb of allNotebooks) {
       notebookNames.set(nb.id, nb.name);
       if (nb.icon) notebookIcons.set(nb.id, nb.icon);
     }
@@ -493,17 +516,18 @@ var SiYuanConnector = class extends Connector {
     this.debug(`poll: ${liveIds.size} live doc IDs across all notebooks`);
     const previousDocs = this.lastState?.knownDocs ?? {};
     const previousIds = new Set(Object.keys(previousDocs));
-    const lastMaxUpdated = this.lastState?.lastMaxUpdated;
+    const previousCursors = this.lastState?.lastUpdatedByNotebook ?? {};
+    const legacyCursor = this.lastState?.lastMaxUpdated;
     const previousRetryIds = this.lastState?.pendingRetry ?? [];
     const changedDocs = [];
-    let maxUpdated = lastMaxUpdated ?? "";
     for (const nb of notebooks) {
       if (this.signal.aborted) return;
       let blocks;
-      if (lastMaxUpdated) {
-        blocks = await this.client.listDocBlocksSince(nb.id, lastMaxUpdated);
+      const cursor = previousCursors[nb.id] ?? legacyCursor;
+      if (cursor) {
+        blocks = await this.client.listDocBlocksSince(nb.id, cursor);
         this.debug(
-          `poll: notebook ${nb.name} incremental since ${lastMaxUpdated} \u2192 ${blocks.length} docs`
+          `poll: notebook ${nb.name} incremental since ${cursor} \u2192 ${blocks.length} docs`
         );
       } else {
         blocks = await this.client.listDocBlocks(nb.id);
@@ -513,7 +537,6 @@ var SiYuanConnector = class extends Connector {
       }
       for (const b of blocks) {
         changedDocs.push(b);
-        if (b.updated && b.updated > maxUpdated) maxUpdated = b.updated;
       }
     }
     let retryDocs = [];
@@ -523,13 +546,10 @@ var SiYuanConnector = class extends Connector {
         `poll: retrying ${retryDocs.length} previously failed docs (wanted ${previousRetryIds.length})`
       );
     }
+    const retryFoundIds = new Set(retryDocs.map((doc) => doc.id));
     const deletedDocIds = [];
     for (const id of previousIds) {
       if (!liveIds.has(id)) deletedDocIds.push(id);
-    }
-    if (deletedDocIds.length > 0) {
-      this.debug(`poll: ${deletedDocIds.length} docs to delete`);
-      yield { updates: deletedDocIds.map((id) => del(id)) };
     }
     const docsByID = /* @__PURE__ */ new Map();
     for (const doc of changedDocs) {
@@ -549,6 +569,28 @@ var SiYuanConnector = class extends Connector {
     for (const id of deletedDocIds) delete nextDocs[id];
     const nextRetry = new Set(previousRetryIds);
     for (const id of deletedDocIds) nextRetry.delete(id);
+    for (const id of previousRetryIds) {
+      if (!retryFoundIds.has(id)) nextRetry.delete(id);
+    }
+    const nextCursors = { ...previousCursors };
+    if (legacyCursor) {
+      for (const nb of notebooks) {
+        if (nextCursors[nb.id] === void 0) nextCursors[nb.id] = legacyCursor;
+      }
+    }
+    const checkpoint = () => ({
+      knownDocs: { ...nextDocs },
+      lastUpdatedByNotebook: { ...nextCursors },
+      lastSyncAt: (/* @__PURE__ */ new Date()).toISOString(),
+      pendingRetry: Array.from(nextRetry)
+    });
+    if (deletedDocIds.length > 0) {
+      this.debug(`poll: ${deletedDocIds.length} docs to delete`);
+      yield {
+        updates: deletedDocIds.map((id) => del(id)),
+        state: checkpoint()
+      };
+    }
     let yielded = 0;
     for (let i = 0; i < docsToFetch.length; i += EXPORT_CONCURRENCY) {
       if (this.signal.aborted) return;
@@ -562,24 +604,34 @@ var SiYuanConnector = class extends Connector {
               markdown: exported.content ?? "",
               exported: true
             };
-          } catch (err) {
+          } catch {
             return {
               doc,
-              markdown: `<!-- export failed: ${err.message} -->`,
+              markdown: "",
               exported: false
             };
           }
         })
       );
-      const batch = chunkResults.map(
-        (r) => this.buildDocUpsert(r.doc, r.markdown, notebookNames, notebookIcons)
+      const batch = chunkResults.filter((r) => r.exported).map(
+        (r) => this.buildDocUpsert(
+          r.doc,
+          r.markdown,
+          notebookNames,
+          notebookIcons
+        )
       );
       for (const r of chunkResults) {
         if (r.exported) {
           if (r.doc.updated) nextDocs[r.doc.id] = r.doc.updated;
+          const notebookId = r.doc.box ?? "";
+          if (r.doc.updated && (!nextCursors[notebookId] || r.doc.updated > nextCursors[notebookId])) {
+            nextCursors[notebookId] = r.doc.updated;
+          }
           nextRetry.delete(r.doc.id);
         } else {
           nextRetry.add(r.doc.id);
+          this.debug(`export failed for doc ${r.doc.id}; queued for retry`);
         }
       }
       yielded += batch.length;
@@ -588,24 +640,14 @@ var SiYuanConnector = class extends Connector {
       );
       yield {
         updates: batch,
-        state: {
-          knownDocs: nextDocs,
-          lastMaxUpdated: maxUpdated,
-          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString(),
-          pendingRetry: Array.from(nextRetry)
-        }
+        state: checkpoint()
       };
     }
     if (docsToFetch.length === 0 && deletedDocIds.length === 0) {
       this.debug("poll: no changes, yielding empty state checkpoint");
       yield {
         updates: [],
-        state: {
-          knownDocs: nextDocs,
-          lastMaxUpdated: maxUpdated,
-          lastSyncAt: (/* @__PURE__ */ new Date()).toISOString(),
-          pendingRetry: Array.from(nextRetry)
-        }
+        state: checkpoint()
       };
     }
     this.flushDebug();
@@ -619,10 +661,11 @@ var SiYuanConnector = class extends Connector {
     const rawTitle = doc.content || doc.hpath || doc.id;
     const iconEmoji = iconCodepointToEmoji(notebookIcon);
     const titleCore = buildDisplayTitle(
-      truncateTitle(rawTitle),
+      rawTitle,
       notebookName || void 0
     );
-    const title = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+    const titleWithIcon = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+    const title = truncateTitle(titleWithIcon);
     const updatedAt = toRfc3339(doc.updated);
     const createdAt = toRfc3339(doc.created);
     const pathBreadcrumb = formatPathBreadcrumb(doc.hpath, {

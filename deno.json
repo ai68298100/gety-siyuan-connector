@@ -17,7 +17,7 @@
 		"fmt:check": "deno fmt --check",
 		"lint": "deno lint",
 		"lint:fix": "deno lint --fix",
-		"verify": "deno task fix && deno task check && deno task test && deno task build"
+		"verify": "deno task fmt:check && deno task lint && deno task check && deno task test && deno task build"
 	},
 	"fmt": {
 		"useTabs": true,

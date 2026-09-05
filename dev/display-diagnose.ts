@@ -186,8 +186,9 @@ function render(
 	const header = buildContentHeader(
 		pathBreadcrumb || undefined,
 		updatedAt,
-		content,
-		tags,
+		undefined,
+		undefined,
+		true,
 	);
 	return { title, content, header, full: header + content, tags };
 }

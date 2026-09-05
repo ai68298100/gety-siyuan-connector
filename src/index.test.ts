@@ -220,6 +220,18 @@ Deno.test('stripInlineHtml removes table and list wrappers', () => {
 	assert.equal(result.includes('cell'), true);
 });
 
+Deno.test('stripInlineHtml removes executable content and preserves links', () => {
+	const result = stripInlineHtml(
+		'<script>alert(1)</script><a href="https://example.com">Docs</a>',
+	);
+	assert.equal(result.includes('alert'), false);
+	assert.equal(result.includes('[Docs](https://example.com)'), true);
+});
+
+Deno.test('stripInlineHtml drops unsafe link protocols', () => {
+	assert.equal(stripInlineHtml('<a href="javascript:alert(1)">Run</a>'), 'Run');
+});
+
 Deno.test('cleanEmbedBlocks converts {{{row...}}} to blockquote', () => {
 	const result = cleanEmbedBlocks('{{{row\n嵌入内容\n}}}');
 	assert.equal(result.includes('{{{'), false);
@@ -284,6 +296,18 @@ Deno.test('convertLocalImages is aliased to convertLocalAssets', () => {
 });
 
 // ─── Links ──────────────────────────────────────────────────────────────────
+
+Deno.test('convertLocalAssets keeps remote query images intact', () => {
+	const md = '![remote](https://example.com/a.png?width=320)';
+	assert.equal(convertLocalAssets(md), md);
+});
+
+Deno.test('convertLocalAssets classifies local media with query parameters', () => {
+	assert.equal(
+		convertLocalAssets('![recording](assets/meeting.mp3?download=1)'),
+		'🎵 recording',
+	);
+});
 
 Deno.test('extractLinks pulls siyuan block IDs from markdown', () => {
 	const md =
@@ -372,6 +396,16 @@ Deno.test('formatPathBreadcrumb drops segments already shown in the title', () =
 			dropLast: '文档名',
 		}),
 		'子目录',
+	);
+});
+
+Deno.test('formatPathBreadcrumb removes notebook and document from a root path', () => {
+	assert.equal(
+		formatPathBreadcrumb('/Notebook/Document', {
+			dropFirst: 'Notebook',
+			dropLast: 'Document',
+		}),
+		'',
 	);
 });
 

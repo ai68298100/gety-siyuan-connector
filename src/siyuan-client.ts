@@ -112,7 +112,9 @@ export class SiYuanClient {
 	}
 
 	/**
-	 * List document blocks updated since a SiYuan timestamp (YYYYMMDDHHmmss).
+	 * List document blocks updated at or after a SiYuan timestamp
+	 * (YYYYMMDDHHmmss). The inclusive boundary prevents same-second updates
+	 * from being skipped; callers de-duplicate against their persisted state.
 	 * Used for incremental sync: only fetches docs whose `updated` advanced
 	 * since the last poll, avoiding a full metadata scan on steady state.
 	 */
@@ -125,7 +127,7 @@ export class SiYuanClient {
 			`FROM blocks WHERE type = 'd' AND box = '${
 				this.escapeSql(notebookId)
 			}' ` +
-			`AND updated > '${this.escapeSql(sinceTimestamp)}' ` +
+			`AND updated >= '${this.escapeSql(sinceTimestamp)}' ` +
 			`ORDER BY path ASC`;
 		return this.query(stmt);
 	}
@@ -227,13 +229,20 @@ export class SiYuanClient {
 			typeof payload === 'object' &&
 			payload !== null &&
 			'code' in payload &&
-			'data' in payload &&
 			typeof (payload as { code: unknown }).code === 'number'
 		) {
 			const code = (payload as { code: number }).code;
 			if (code !== 0) {
 				throw new SiYuanError(
 					`SiYuan error on ${endpoint}: ${(payload as { msg: string }).msg}`,
+					response.status,
+					endpoint,
+					code,
+				);
+			}
+			if (!('data' in payload)) {
+				throw new SiYuanError(
+					`SiYuan response missing data on ${endpoint}`,
 					response.status,
 					endpoint,
 					code,
