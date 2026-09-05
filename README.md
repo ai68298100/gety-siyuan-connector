@@ -47,13 +47,13 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 
 ### 标题与内容头部的分工
 
-标题已经包含笔记本图标与名称，内容头部采用 **compact
-模式**，只显示路径和更新时间，
-为正文预留更多搜索预览空间。字数、阅读时长、标签等信息存储在 `metadata` 中，
-可通过 Gety 的元数据筛选使用：
+标题优先使用思源文档自身图标（没有时回退到笔记本图标），内容头部采用 **compact
+模式**，显示父路径、更新时间和紧凑标签行，为正文预留更多搜索预览空间。完整来源路径、
+别名、备注和标签同时存储在 `metadata` 中，可通过 Gety 的元数据筛选使用：
 
-- 标题：`📔 示例文档标题 · 日记本`
-- 内容头部：父路径（如有）、更新时间
+- 标题：`📁 示例文档标题`
+- 内容头部：父路径（如有）、更新时间、标签
+- 完整来源：`Notebook / 项目A / 示例文档标题`
 
 ```
 > 📁 子目录
@@ -111,9 +111,12 @@ notebooks fully searchable in Gety — alongside local files and other sources.
 2. 点击搜索结果（链接图标），Gety 调用 `siyuan://blocks/<doc-id>` 协议，
    自动打开思源并定位到该文档，可直接编辑。
 3. 可用元数据字段辅助筛选搜索：
-   - `notebook` — 笔记本 ID
    - `notebook_name` — 笔记本名（如 `工作笔记`、`个人日记`）
    - `doc_path` — 文档路径（如 `项目A / 子目录 / 文档`）
+   - `source_path` — 包含笔记本和文档名的完整来源路径
+   - `name` — 思源原生块名称
+   - `alias` — 文档别名
+   - `memo` — 文档备注
    - `tags` — 思源标签（含 frontmatter 中的 `tags:` 和正文 `#标签`）
    - `links` — 文档内双链指向的块 ID
 
@@ -131,7 +134,7 @@ deno task build
 deno task verify
 ```
 
-包含格式化检查、lint、单元测试（70 个）和构建。
+包含格式化检查、lint、单元测试（73 个）和构建。
 
 ### Exercise the lifecycle locally / 本地试跑
 
@@ -212,7 +215,7 @@ manifest.json          # Connector manifest (id/name/config/icon/schedule)
 src/index.ts           # Connector implementation (poll lifecycle, concurrent export)
 src/siyuan-client.ts   # SiYuan kernel HTTP API client (incremental SQL queries)
 src/utils.ts           # Pure content-cleaning helpers (code protection, tag extraction)
-src/index.test.ts      # Unit tests (61)
+src/index.test.ts      # Unit tests (63)
 dist/main.js           # Built bundle loaded by Gety
 icon.svg / icon.png    # SiYuan logo icons
 scripts/               # Build tooling (esbuild bundler)
@@ -221,6 +224,10 @@ dev/                   # SDK + local runner + test harness
 
 ## Version history / 版本历史
 
+- **v0.5.0** — 搜索结果使用文档原生图标并显示紧凑标签；新增完整来源路径、
+  文档名称、别名与备注索引；合并思源原生标签；修复 emoji 标题截断
+- **v0.4.2** — 修复按笔记本和批次推进同步游标、纯删除轮次状态持久化、
+  导出失败重试及关闭笔记本元数据保留；强化 HTML 与本地资源清理
 - **v0.4.1** — 修复 Release 打包缺失 `dist/` 目录、导出失败永不重试 （新增
   `pendingRetry` 机制）、关闭笔记本导致文档被误删；新增 `listDocsByIds`
   与对应单元测试

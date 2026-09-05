@@ -38,7 +38,7 @@ var SiYuanClient = class {
   }
   /** List all document blocks for a notebook via SQL (full metadata). */
   listDocBlocks(notebookId) {
-    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' ORDER BY path ASC`;
+    const stmt = `SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, updated, created, name, alias, memo, tag, ial FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
   /**
@@ -49,7 +49,7 @@ var SiYuanClient = class {
    * since the last poll, avoiding a full metadata scan on steady state.
    */
   listDocBlocksSince(notebookId, sinceTimestamp) {
-    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' AND updated >= '${this.escapeSql(sinceTimestamp)}' ORDER BY path ASC`;
+    const stmt = `SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, updated, created, name, alias, memo, tag, ial FROM blocks WHERE type = 'd' AND box = '${this.escapeSql(notebookId)}' AND updated >= '${this.escapeSql(sinceTimestamp)}' ORDER BY path ASC`;
     return this.query(stmt);
   }
   /**
@@ -70,7 +70,7 @@ var SiYuanClient = class {
   listDocsByIds(ids) {
     if (ids.length === 0) return Promise.resolve([]);
     const quoted = ids.map((id) => `'${this.escapeSql(id)}'`).join(", ");
-    const stmt = `SELECT id, content, type, subtype, hpath, path, box, updated, created FROM blocks WHERE type = 'd' AND id IN (${quoted}) ORDER BY path ASC`;
+    const stmt = `SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, updated, created, name, alias, memo, tag, ial FROM blocks WHERE type = 'd' AND id IN (${quoted}) ORDER BY path ASC`;
     return this.query(stmt);
   }
   /** Run an arbitrary SQL query against the SiYuan kernel. */
@@ -359,12 +359,9 @@ function estimateReadTimeDetailed(cjk, latin) {
 }
 function truncateTitle(title, maxLength = 60) {
   const text = (title ?? "").trim();
-  if (text.length <= maxLength) return text;
-  return text.slice(0, Math.max(1, maxLength - 1)) + "\u2026";
-}
-function buildDisplayTitle(docTitle, notebookName) {
-  if (!notebookName) return docTitle;
-  return `${docTitle} \xB7 ${notebookName}`;
+  const chars = Array.from(text);
+  if (chars.length <= maxLength) return text;
+  return chars.slice(0, Math.max(1, maxLength - 1)).join("") + "\u2026";
 }
 function formatPathBreadcrumb(hpath, opts) {
   if (!hpath) return "";
@@ -376,6 +373,29 @@ function formatPathBreadcrumb(hpath, opts) {
     segments = segments.slice(0, -1);
   }
   return segments.join(" / ");
+}
+function formatFullSourcePath(hpath, notebookName, fallbackTitle) {
+  const segments = (hpath ?? "").split("/").map((s) => s.trim()).filter(
+    Boolean
+  );
+  if (segments.length === 0) {
+    return [notebookName, fallbackTitle].filter(Boolean).join(" / ");
+  }
+  if (notebookName && segments[0] !== notebookName) {
+    segments.unshift(notebookName);
+  }
+  return segments.join(" / ");
+}
+function extractIALAttribute(ial, key) {
+  if (!ial || !key) return "";
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = ial.match(
+    new RegExp(`(?:^|\\s)${escapedKey}=(?:"([^"]*)"|'([^']*)')`, "i")
+  );
+  return match?.[1] ?? match?.[2] ?? "";
+}
+function extractIALIcon(ial) {
+  return extractIALAttribute(ial, "icon");
 }
 function iconCodepointToEmoji(icon) {
   if (!icon) return "";
@@ -659,12 +679,10 @@ var SiYuanConnector = class extends Connector {
     const notebookName = notebookNames.get(notebookId) ?? "";
     const notebookIcon = notebookIcons.get(notebookId);
     const rawTitle = doc.content || doc.hpath || doc.id;
-    const iconEmoji = iconCodepointToEmoji(notebookIcon);
-    const titleCore = buildDisplayTitle(
-      rawTitle,
-      notebookName || void 0
-    );
-    const titleWithIcon = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+    const docIcon = extractIALIcon(doc.ial);
+    const iconCodepoint = docIcon || notebookIcon;
+    const iconEmoji = iconCodepointToEmoji(iconCodepoint);
+    const titleWithIcon = iconEmoji ? `${iconEmoji} ${rawTitle}` : rawTitle;
     const title = truncateTitle(titleWithIcon);
     const updatedAt = toRfc3339(doc.updated);
     const createdAt = toRfc3339(doc.created);
@@ -672,6 +690,11 @@ var SiYuanConnector = class extends Connector {
       dropFirst: notebookName || void 0,
       dropLast: rawTitle
     });
+    const sourcePath = formatFullSourcePath(
+      doc.hpath,
+      notebookName || void 0,
+      rawTitle
+    );
     const fmTags = extractFrontmatterTags(rawMarkdown);
     let content = cleanMarkdown(rawMarkdown);
     content = stripDuplicateH1(content, rawTitle);
@@ -680,6 +703,8 @@ var SiYuanConnector = class extends Connector {
     const tagSet = /* @__PURE__ */ new Set();
     for (const t of fmTags.split(",")) if (t) tagSet.add(t);
     for (const t of bodyTags.split(",")) if (t) tagSet.add(t);
+    const nativeTags = extractTags((doc.tag ?? "").replace(/#/g, " #"));
+    for (const t of nativeTags.split(",")) if (t) tagSet.add(t);
     const tags = Array.from(tagSet).slice(0, 20).join(",");
     const header = buildContentHeader(
       pathBreadcrumb || void 0,
@@ -689,8 +714,27 @@ var SiYuanConnector = class extends Connector {
       true
       // compact
     );
-    const fullContent = header + content;
+    const tagHeader = tags ? `> \u{1F3F7}\uFE0F ${tags.split(",").slice(0, 10).map((tag) => `#${tag}`).join(" ")}
+
+` : "";
+    const fullContent = header + tagHeader + content;
     const links = extractLinks(fullContent);
+    const metadata = {
+      url: `siyuan://blocks/${doc.id}`,
+      notebook: notebookId,
+      notebook_name: notebookName,
+      doc_path: pathBreadcrumb,
+      source_path: sourcePath,
+      tags,
+      links
+    };
+    if (createdAt) metadata.created_at = createdAt;
+    if (doc.name) metadata.name = doc.name;
+    if (doc.alias) metadata.alias = doc.alias;
+    if (doc.memo) metadata.memo = doc.memo;
+    if (iconCodepoint) metadata.icon = iconCodepoint;
+    if (doc.parent_id) metadata.parent_id = doc.parent_id;
+    if (doc.root_id) metadata.root_id = doc.root_id;
     return upsert({
       id: doc.id,
       title,
@@ -699,15 +743,7 @@ var SiYuanConnector = class extends Connector {
       doc_type: DOC_TYPE,
       doc_updated_at: updatedAt,
       original_file_size: new TextEncoder().encode(fullContent).length,
-      metadata: {
-        url: `siyuan://blocks/${doc.id}`,
-        created_at: createdAt,
-        notebook: notebookId,
-        notebook_name: notebookName,
-        doc_path: pathBreadcrumb,
-        tags,
-        links
-      }
+      metadata
     });
   }
 };

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-09-05
+
+### Added
+
+- Search metadata now includes the complete `source_path`, native document
+  `name`, `alias`, `memo`, and optional block hierarchy IDs.
+- Search previews show native document icons and a compact tag line; native
+  SiYuan tags are merged with frontmatter and inline Markdown tags.
+- SQL document queries include the native fields used by SiYuan's own search
+  result renderer.
+
+### Fixed
+
+- Title truncation now counts Unicode code points, so emoji and other
+  surrogate-pair characters are never split in search result titles.
+
 ## [0.4.2] - 2026-09-05
 
 ### Fixed

@@ -156,3 +156,38 @@ Deno.test('retrying a closed-notebook document keeps notebook metadata', async (
 		assert.equal(metadata.notebook_name, 'Archived');
 	}
 });
+
+Deno.test('document upserts expose native display metadata and source path', async () => {
+	const doc = {
+		...makeDoc('pretty'),
+		hpath: '/Notebook/Projects/pretty',
+		alias: 'Reading notes',
+		memo: 'A useful memo',
+		tag: '#native-tag#second-tag',
+		ial: '{: icon="1f4c1"}',
+	};
+	const connector = createConnector(
+		baseClient({
+			listDocIds: () => Promise.resolve([doc]),
+			listDocBlocks: () => Promise.resolve([doc]),
+			exportMdContent: () =>
+				Promise.resolve({
+					hPath: '/Notebook/Projects/pretty',
+					content: '# Document pretty\n\nBody',
+				}),
+		}),
+	);
+
+	const result = (await connector.poll().next()).value;
+	const update = result?.updates[0];
+	assert.equal(update?.kind, 'upsert');
+	if (update?.kind === 'upsert') {
+		const metadata = update.doc.metadata as Record<string, string>;
+		assert.equal(update.doc.title, '📁 Document pretty');
+		assert.equal(metadata.source_path, 'Notebook / Projects / pretty');
+		assert.equal(metadata.alias, 'Reading notes');
+		assert.equal(metadata.memo, 'A useful memo');
+		assert.equal(metadata.tags, 'native-tag,second-tag');
+		assert.match(update.doc.content ?? '', /#native-tag #second-tag/);
+	}
+});

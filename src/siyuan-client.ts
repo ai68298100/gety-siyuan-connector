@@ -38,6 +38,15 @@ export interface SiyuanBlock {
 	updated?: string;
 	/** Creation timestamp, format "YYYYMMDDHHmmss" in local time. */
 	created?: string;
+	/** Parent block and document root IDs from the blocks table. */
+	parent_id?: string;
+	root_id?: string;
+	/** Native document attributes surfaced by SiYuan search. */
+	name?: string;
+	alias?: string;
+	memo?: string;
+	tag?: string;
+	ial?: string;
 	/** Markdown content for the block (only populated by some queries). */
 	fcontent?: string;
 	/** Markdown content of the block (alternate field name). */
@@ -103,7 +112,8 @@ export class SiYuanClient {
 	/** List all document blocks for a notebook via SQL (full metadata). */
 	listDocBlocks(notebookId: string): Promise<SiyuanBlock[]> {
 		const stmt =
-			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
+			`SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, ` +
+			`updated, created, name, alias, memo, tag, ial ` +
 			`FROM blocks WHERE type = 'd' AND box = '${
 				this.escapeSql(notebookId)
 			}' ` +
@@ -123,7 +133,8 @@ export class SiYuanClient {
 		sinceTimestamp: string,
 	): Promise<SiyuanBlock[]> {
 		const stmt =
-			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
+			`SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, ` +
+			`updated, created, name, alias, memo, tag, ial ` +
 			`FROM blocks WHERE type = 'd' AND box = '${
 				this.escapeSql(notebookId)
 			}' ` +
@@ -156,7 +167,8 @@ export class SiYuanClient {
 		if (ids.length === 0) return Promise.resolve([]);
 		const quoted = ids.map((id) => `'${this.escapeSql(id)}'`).join(', ');
 		const stmt =
-			`SELECT id, content, type, subtype, hpath, path, box, updated, created ` +
+			`SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, ` +
+			`updated, created, name, alias, memo, tag, ial ` +
 			`FROM blocks WHERE type = 'd' AND id IN (${quoted}) ` +
 			`ORDER BY path ASC`;
 		return this.query(stmt);

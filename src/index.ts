@@ -8,11 +8,12 @@ import type { ManifestConfig } from './gen/manifest.d.ts';
 import { type SiyuanBlock, SiYuanClient } from './siyuan-client.ts';
 import {
 	buildContentHeader,
-	buildDisplayTitle,
 	cleanMarkdown,
 	extractFrontmatterTags,
+	extractIALIcon,
 	extractLinks,
 	extractTags,
+	formatFullSourcePath,
 	formatPathBreadcrumb,
 	iconCodepointToEmoji,
 	stripDuplicateH1,
@@ -352,12 +353,10 @@ export default class SiYuanConnector extends Connector<
 		const notebookName = notebookNames.get(notebookId) ?? '';
 		const notebookIcon = notebookIcons.get(notebookId);
 		const rawTitle = doc.content || doc.hpath || doc.id;
-		const iconEmoji = iconCodepointToEmoji(notebookIcon);
-		const titleCore = buildDisplayTitle(
-			rawTitle,
-			notebookName || undefined,
-		);
-		const titleWithIcon = iconEmoji ? `${iconEmoji} ${titleCore}` : titleCore;
+		const docIcon = extractIALIcon(doc.ial);
+		const iconCodepoint = docIcon || notebookIcon;
+		const iconEmoji = iconCodepointToEmoji(iconCodepoint);
+		const titleWithIcon = iconEmoji ? `${iconEmoji} ${rawTitle}` : rawTitle;
 		const title = truncateTitle(titleWithIcon);
 		const updatedAt = toRfc3339(doc.updated);
 		const createdAt = toRfc3339(doc.created);
@@ -366,6 +365,11 @@ export default class SiYuanConnector extends Connector<
 			dropFirst: notebookName || undefined,
 			dropLast: rawTitle,
 		});
+		const sourcePath = formatFullSourcePath(
+			doc.hpath,
+			notebookName || undefined,
+			rawTitle,
+		);
 
 		// Extract frontmatter tags BEFORE stripFrontmatter removes them.
 		const fmTags = extractFrontmatterTags(rawMarkdown);
@@ -379,6 +383,8 @@ export default class SiYuanConnector extends Connector<
 		const tagSet = new Set<string>();
 		for (const t of fmTags.split(',')) if (t) tagSet.add(t);
 		for (const t of bodyTags.split(',')) if (t) tagSet.add(t);
+		const nativeTags = extractTags((doc.tag ?? '').replace(/#/g, ' #'));
+		for (const t of nativeTags.split(',')) if (t) tagSet.add(t);
 		const tags = Array.from(tagSet).slice(0, 20).join(',');
 
 		// Compact header: path + date only. Word count, read time, and tags
@@ -390,8 +396,29 @@ export default class SiYuanConnector extends Connector<
 			undefined,
 			true, // compact
 		);
-		const fullContent = header + content;
+		const tagHeader = tags
+			? `> 🏷️ ${
+				tags.split(',').slice(0, 10).map((tag) => `#${tag}`).join(' ')
+			}\n\n`
+			: '';
+		const fullContent = header + tagHeader + content;
 		const links = extractLinks(fullContent);
+		const metadata: Record<string, string> = {
+			url: `siyuan://blocks/${doc.id}`,
+			notebook: notebookId,
+			notebook_name: notebookName,
+			doc_path: pathBreadcrumb,
+			source_path: sourcePath,
+			tags,
+			links,
+		};
+		if (createdAt) metadata.created_at = createdAt;
+		if (doc.name) metadata.name = doc.name;
+		if (doc.alias) metadata.alias = doc.alias;
+		if (doc.memo) metadata.memo = doc.memo;
+		if (iconCodepoint) metadata.icon = iconCodepoint;
+		if (doc.parent_id) metadata.parent_id = doc.parent_id;
+		if (doc.root_id) metadata.root_id = doc.root_id;
 
 		return upsert({
 			id: doc.id,
@@ -401,15 +428,7 @@ export default class SiYuanConnector extends Connector<
 			doc_type: DOC_TYPE,
 			doc_updated_at: updatedAt,
 			original_file_size: new TextEncoder().encode(fullContent).length,
-			metadata: {
-				url: `siyuan://blocks/${doc.id}`,
-				created_at: createdAt,
-				notebook: notebookId,
-				notebook_name: notebookName,
-				doc_path: pathBreadcrumb,
-				tags,
-				links,
-			},
+			metadata,
 		});
 	}
 }

@@ -13,8 +13,11 @@ import {
 	estimateReadTime,
 	estimateReadTimeDetailed,
 	extractFrontmatterTags,
+	extractIALAttribute,
+	extractIALIcon,
 	extractLinks,
 	extractTags,
+	formatFullSourcePath,
 	formatPathBreadcrumb,
 	formatRelativeDate,
 	iconCodepointToEmoji,
@@ -374,6 +377,8 @@ Deno.test('truncateTitle shortens overlong titles only', () => {
 	const result = truncateTitle('标题内容'.repeat(50));
 	assert.equal(result.length, 60);
 	assert.equal(result.endsWith('…'), true);
+	const emojiResult = truncateTitle(`${'a'.repeat(57)}😀${'x'.repeat(4)}`);
+	assert.equal(emojiResult, `${'a'.repeat(57)}😀x…`);
 });
 
 Deno.test('buildDisplayTitle appends notebook name', () => {
@@ -409,11 +414,35 @@ Deno.test('formatPathBreadcrumb removes notebook and document from a root path',
 	);
 });
 
+Deno.test('formatFullSourcePath keeps notebook and document context', () => {
+	assert.equal(
+		formatFullSourcePath('/Notebook/Project/Document', 'Notebook', 'Document'),
+		'Notebook / Project / Document',
+	);
+	assert.equal(
+		formatFullSourcePath(undefined, 'Notebook', 'Document'),
+		'Notebook / Document',
+	);
+	assert.equal(
+		formatFullSourcePath('/Project/Document', 'Notebook', 'Document'),
+		'Notebook / Project / Document',
+	);
+});
+
 Deno.test('iconCodepointToEmoji converts hex codepoints to emoji', () => {
 	assert.equal(iconCodepointToEmoji('1f4d4'), '📔');
 	assert.equal(iconCodepointToEmoji('2702-fe0f'), '✂️');
 	assert.equal(iconCodepointToEmoji(''), '');
 	assert.equal(iconCodepointToEmoji('invalid'), '');
+});
+
+Deno.test('extractIALIcon reads single or double quoted document icons', () => {
+	assert.equal(extractIALIcon('{: icon="1f4c1"}'), '1f4c1');
+	assert.equal(
+		extractIALAttribute("{: alias='Notes' icon='1f4d1'}", 'alias'),
+		'Notes',
+	);
+	assert.equal(extractIALIcon('{: id="x"}'), '');
 });
 
 Deno.test('stripDuplicateH1 removes leading H1 matching title', () => {

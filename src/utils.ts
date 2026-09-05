@@ -419,8 +419,9 @@ export function estimateReadTimeDetailed(cjk: number, latin: number): number {
  */
 export function truncateTitle(title: string, maxLength = 60): string {
 	const text = (title ?? '').trim();
-	if (text.length <= maxLength) return text;
-	return text.slice(0, Math.max(1, maxLength - 1)) + '…';
+	const chars = Array.from(text);
+	if (chars.length <= maxLength) return text;
+	return chars.slice(0, Math.max(1, maxLength - 1)).join('') + '…';
 }
 
 /**
@@ -456,6 +457,45 @@ export function formatPathBreadcrumb(
 		segments = segments.slice(0, -1);
 	}
 	return segments.join(' / ');
+}
+
+/**
+ * Format the complete source path, including the notebook and document name.
+ * SiYuan hpaths already include the notebook in normal API responses.
+ */
+export function formatFullSourcePath(
+	hpath: string | undefined,
+	notebookName?: string,
+	fallbackTitle?: string,
+): string {
+	const segments = (hpath ?? '').split('/').map((s) => s.trim()).filter(
+		Boolean,
+	);
+	if (segments.length === 0) {
+		return [notebookName, fallbackTitle].filter(Boolean).join(' / ');
+	}
+	if (notebookName && segments[0] !== notebookName) {
+		segments.unshift(notebookName);
+	}
+	return segments.join(' / ');
+}
+
+/** Extract a quoted attribute from SiYuan's IAL string. */
+export function extractIALAttribute(
+	ial: string | undefined,
+	key: string,
+): string {
+	if (!ial || !key) return '';
+	const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const match = ial.match(
+		new RegExp(`(?:^|\\s)${escapedKey}=(?:"([^"]*)"|'([^']*)')`, 'i'),
+	);
+	return match?.[1] ?? match?.[2] ?? '';
+}
+
+/** Return the document icon codepoint stored in SiYuan IAL. */
+export function extractIALIcon(ial?: string): string {
+	return extractIALAttribute(ial, 'icon');
 }
 
 /**

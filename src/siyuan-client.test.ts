@@ -57,6 +57,10 @@ Deno.test('listDocsByIds builds an IN query with escaped ids', async () => {
 			captured[0].sql,
 			/WHERE type = 'd' AND id IN \('id-one', 'id-two'\)/,
 		);
+		assert.match(
+			captured[0].sql,
+			/SELECT id, parent_id, root_id, content, type, subtype, hpath, path, box, updated, created, name, alias, memo, tag, ial FROM blocks/,
+		);
 		assert.equal(captured[0].token, 'token tok-123');
 	} finally {
 		restore();

@@ -1,7 +1,7 @@
 {
 	"id": "siyuan-gety",
 	"name": "Siyuan Note",
-	"version": "0.4.2",
+	"version": "0.5.0",
 	"min_gety_app_version": "0.5.1",
 	"capabilities": ["data-source"],
 	"entry": "dist/main.js",
@@ -37,9 +37,12 @@
 	},
 	"schema": {
 		"extra_gety_indexed_fields": [
-			{ "field": "notebook", "strategy": "fast_text" },
 			{ "field": "notebook_name", "strategy": "fast_text" },
 			{ "field": "doc_path", "strategy": "fast_text" },
+			{ "field": "source_path", "strategy": "fast_text" },
+			{ "field": "name", "strategy": "fast_text" },
+			{ "field": "alias", "strategy": "fast_text" },
+			{ "field": "memo", "strategy": "full_text" },
 			{ "field": "tags", "strategy": "fast_text" },
 			{ "field": "links", "strategy": "fast_text" }
 		]
